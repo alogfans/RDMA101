@@ -1,0 +1,32 @@
+Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+
+The documentation materials in this repository are licensed under the
+Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+License (CC BY-NC-SA 4.0).
+
+This license applies to tutorials, articles, diagrams, explanatory examples,
+and other documentation materials in this repository, especially materials
+under the docs/ directory.
+
+Source code, executable examples, and software components in this repository
+are not covered by this license when they include separate license notices.
+
+Contributors retain copyright to their own contributions. By submitting
+documentation contributions to this project, contributors grant Feng Ren the
+right to use, edit, reorganize, adapt, and publish those contributions as part
+of RDMA101 and as part of later articles, lecture notes, books, courses, or
+other independent publications based on RDMA101, including works published
+under Feng Ren's sole authorship. Unless separately agreed in writing, this
+use does not require additional permission and does not create an obligation
+to provide royalties, fees, or other compensation.
+
+The public documentation version of RDMA101 will remain publicly available.
+The publication rights reserved above do not withdraw the already published
+RDMA101 documentation and do not limit public access, sharing, or adaptation
+of the public version under CC BY-NC-SA 4.0.
+
+Third-party commercial use of the documentation materials requires prior
+written permission from the relevant copyright holders.
+
+Full CC BY-NC-SA 4.0 license text:
+https://creativecommons.org/licenses/by-nc-sa/4.0/legalcode
