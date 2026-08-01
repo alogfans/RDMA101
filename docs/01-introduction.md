@@ -30,6 +30,21 @@ RDMA 重新组织这条数据路径。它将频繁发生的数据传输从内核
 
 TCP socket 是上述模式在操作系统中的典型实现。它用 IP 地址和端口描述 endpoint，用 socket 文件描述符表示通信对象。server 创建监听 socket 后，先用 `bind` 指定本地地址和端口，再用 `listen` 进入监听状态，最后通过 `accept` 接受 client 发起的连接。client 使用 `connect` 连接 server。连接建立后，两端都会得到一个已连接 socket，并通过 `send` 和 `recv` 在这条连接上传输数据。
 
+```mermaid
+sequenceDiagram
+    participant Server
+    participant Client
+
+    Server->>Server: socket()
+    Server->>Server: bind()
+    Server->>Server: listen()
+    Client->>Client: socket()
+    Client->>Server: connect()
+    Server->>Client: accept()
+    Client->>Server: send()
+    Server->>Server: recv()
+```
+
 以下代码片段保留 server 端最核心的动作：绑定本地地址，进入监听状态，接受连接，然后从连接上读取数据。
 
 ```c
@@ -102,6 +117,26 @@ RDMA 也常与 zero copy 一起讨论。RDMA 语境中的 zero copy 主要指避
 ### 4.3 异步队列
 
 RDMA 不是同步的函数调用模型，而是异步队列模型。一个 queue pair，简称 QP，维护两个队列：send queue 和 receive queue。应用发起 SEND、RDMA WRITE、RDMA READ 或 Atomic 操作时，把请求投递到 send queue；应用准备接收 SEND 消息时，把接收 buffer 投递到 receive queue。
+
+```mermaid
+flowchart LR
+    A["应用程序"] -->|"ibv_post_send"| SQ
+    A -->|"ibv_post_recv"| RQ
+
+    subgraph QP["Queue Pair"]
+        direction TB
+        SQ["Send Queue"]
+        RQ["Receive Queue"]
+    end
+
+    SQ --> NIC["RDMA NIC"]
+    RQ --> NIC
+    NIC --> CQ["Completion Queue"]
+    CQ -->|"ibv_poll_cq"| A
+
+    classDef dashed stroke-dasharray: 5 5
+    class QP dashed
+```
 
 投递到队列中的请求称为 work request，简称 WR。WR 描述网卡要做什么：操作类型是什么，本地 buffer 在哪里，长度是多少，使用哪个 `lkey`；如果是 RDMA WRITE、RDMA READ 或 Atomic，还要提供远端地址和 `rkey`。应用提交 WR 之后，网卡异步读取队列并执行请求。
 
@@ -267,6 +302,20 @@ perftest 的结果主要看 client 端回显。client 端输出示例如下：
 ## 6. 单边 RDMA WRITE 样例
 
 在基础 RDMA WRITE 测试通过后，可以通过一个最小程序观察单边 RDMA 的基本结构。样例放在 `examples/one_sided_write/` 目录下，它使用 TCP 作为控制通道交换连接信息，再由 client 发起一次 RDMA WRITE，把字符串直接写入 server 注册好的内存。
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Server
+    participant NIC as RDMA NIC
+
+    Client->>Server: TCP 交换 QP 信息、addr、rkey
+    Client->>NIC: post RDMA WRITE
+    NIC->>Server: 写入已注册 buffer
+    NIC->>Client: 写入完成
+    Client->>Server: TCP 完成通知
+    Server->>Server: 打印 buffer
+```
 
 这个样例参考了 Mooncake TE 中 RDMA 数据路径的核心做法，但去掉了线程池、多网卡调度、metadata 管理和错误恢复等工程复杂度，只保留四个关键动作：
 

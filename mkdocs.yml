@@ -2,6 +2,14 @@ site_name: RDMA101
 site_url: https://renfeng.org
 theme:
   name: material
+extra_css:
+  - stylesheets/extra.css
+markdown_extensions:
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
 nav:
   - 首页: index.md
   - 第一篇：快速入门: 01-introduction.md
