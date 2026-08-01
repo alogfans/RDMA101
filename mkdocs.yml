@@ -1,12 +1,36 @@
 site_name: RDMA101
+site_description: 从 RDMA Hello World 到真实系统
 site_url: https://renfeng.org/rdma101/
 repo_url: https://github.com/alogfans/RDMA101
 repo_name: alogfans/RDMA101
 theme:
   name: material
+  logo: assets/rdma101.svg
+  favicon: assets/rdma101.svg
+  features:
+    - content.code.copy
+    - navigation.indexes
+    - navigation.sections
+    - navigation.top
+    - toc.follow
 extra_css:
   - stylesheets/extra.css
+copyright: >
+  Copyright &copy; 2026 Feng Ren.
+  Documentation: CC BY-NC-SA 4.0.
+  Code examples: Apache-2.0.
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/alogfans/RDMA101
+      name: RDMA101 on GitHub
 markdown_extensions:
+  - attr_list
+  - admonition
+  - def_list
+  - pymdownx.details
+  - pymdownx.tabbed:
+      alternate_style: true
   - pymdownx.superfences:
       custom_fences:
         - name: mermaid
@@ -14,8 +38,15 @@ markdown_extensions:
           format: !!python/name:pymdownx.superfences.fence_code_format
 nav:
   - 首页: index.md
-  - 第一篇：快速入门: 01-introduction.md
-  - 第二篇：编程模型: 02-programming-model.md
-  - 第三篇：内部原理: 03-internals.md
-  - 第四篇：优化技巧: 04-optimization.md
-  - 第五篇：实例研究: 05-case-studies.md
+  - 第一篇：快速入门:
+      - 01-introduction/index.md
+      - 1.1 Hello RDMA: 01-introduction/01-hello-world.md
+  - 第二篇：编程模型:
+      - 02-programming-model/index.md
+      - 2.1 RDMA WRITE 范例解读: 02-programming-model/01-one-sided-write.md
+  - 第三篇：机制探秘:
+      - 03-internals/index.md
+  - 第四篇：优化技巧:
+      - 04-optimization/index.md
+  - 第五篇：实例研究:
+      - 05-case-studies/index.md

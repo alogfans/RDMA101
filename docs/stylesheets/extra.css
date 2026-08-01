@@ -10,3 +10,18 @@
   max-width: 100%;
   height: auto;
 }
+
+.md-typeset .figure-caption {
+  max-width: min(100%, 820px);
+  margin: -0.6rem auto 1.4rem;
+  color: var(--md-default-fg-color--light);
+  font-size: 0.85em;
+  text-align: center;
+}
+
+.md-typeset .table-caption {
+  margin: -0.4rem 0 1.2rem;
+  color: var(--md-default-fg-color--light);
+  font-size: 0.85em;
+  text-align: center;
+}

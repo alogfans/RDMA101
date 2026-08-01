@@ -16,15 +16,15 @@ Mooncake TE 面向 AI 推理、KVCache 迁移、分布式缓存和异构存储�
 
 在线文档发布在 <https://renfeng.org/rdma101/>，项目源码和示例程序托管在 <https://github.com/alogfans/RDMA101>。
 
-- [第一篇：快速入门](docs/01-introduction.md)  
+- [第一篇：快速入门](docs/01-introduction/index.md)
   建立实验环境，识别 RDMA 设备，运行基础工具，并完成一个最小 RDMA Hello World。
-- [第二篇：编程模型](docs/02-programming-model.md)  
+- [第二篇：编程模型](docs/02-programming-model/index.md)
   解释 RDMA 程序的基本结构，重点讨论 MR、QP、CQ、WR、远端地址、访问权限和 completion 等概念之间的关系。
-- [第三篇：内部原理](docs/03-internals.md)  
+- [第三篇：机制探秘](docs/03-internals/index.md)
   从应用代码出发，追踪一次 RDMA 请求经过用户态库、驱动、网卡、PCIe、NUMA 和 RoCE 网络的过程。
-- [第四篇：优化技巧](docs/04-optimization.md)  
+- [第四篇：优化技巧](docs/04-optimization/index.md)
   讨论 RDMA 性能优化中常见的机制和边界，包括 batching、inline data、queue depth、MR cache 和 polling 等主题。
-- [第五篇：实例研究](docs/05-case-studies.md)  
+- [第五篇：实例研究](docs/05-case-studies/index.md)
   回到真实系统，分析 Mooncake TE 以及其他 RDMA 系统在数据路径、控制路径、内存管理、故障处理和性能优化方面的设计。
 
 如果目标是尽快使用 Mooncake TE，建议优先阅读第一篇和第二篇。若需要排查性能和稳定性问题，第三篇和第四篇会提供更直接的背景。若希望参与 Mooncake TE 或其他 RDMA 系统的底层开发，建议按顺序阅读全部五篇。
@@ -52,25 +52,32 @@ Mooncake TE 面向 AI 推理、KVCache 迁移、分布式缓存和异构存储�
 
 ## 当前状态
 
-项目仍处于早期阶段。当前先保留五个顶层篇章文件：
+项目仍处于早期阶段。当前采用“篇/章”两级结构。每一篇都有 `index.md` 作为篇首页，具体正文按章节放在对应目录下；第三到第五篇先保留篇首页，后续逐章补充。
 
 ```text
 docs/
   index.md
-  01-introduction.md
-  02-programming-model.md
-  03-internals.md
-  04-optimization.md
-  05-case-studies.md
+  01-introduction/
+    index.md
+    01-hello-world.md
+  02-programming-model/
+    index.md
+    01-one-sided-write.md
+  03-internals/
+    index.md
+  04-optimization/
+    index.md
+  05-case-studies/
+    index.md
 ```
 
-后续将优先补充可运行示例、实验环境说明、常见错误排查路径，以及 Mooncake TE 中 RDMA transport 与底层 RDMA 概念之间的对应关系。待内容稳定后，再决定是否拆分为更细的章节文件。
+后续将优先补充可运行示例、实验环境说明、常见错误排查路径，以及 Mooncake TE 中 RDMA transport 与底层 RDMA 概念之间的对应关系。
 
 ## 贡献
 
 欢迎提交文档修正、概念解释、实验代码、排障记录、系统案例和论文解读。尤其欢迎真实环境中的 RDMA 或 Mooncake TE 排障记录，包括问题现象、软硬件环境、排查过程和最终原因。
 
-提交文档贡献前，请注意本项目的出版权安排：贡献者保留自己贡献内容的版权；同时，贡献者一旦向本项目提交文档、示例解释、图示、实验记录或案例分析，即表示同意项目作者 Feng Ren 可以在 RDMA101 以及基于 RDMA101 的后续文章、讲义、书籍、课程或其他独立出版物中使用、整理、改写、重组和发布这些贡献内容，包括以 Feng Ren 独立作者身份出版的作品。除非另有书面约定，此类使用不需要再次取得贡献者许可，也不产生稿酬、版税或其他报酬义务。
+提交文档贡献前，请注意本项目的出版权安排：贡献者保留自己贡献内容的版权；同时，贡献者一旦向本项目提交文档、示例解释、图示、实验记录或案例分析，即表示同意项目发起人可以在 RDMA101 以及基于 RDMA101 的后续文章、讲义、书籍、课程或其他独立出版物中使用、整理、改写、重组和发布这些贡献内容，包括以独立作者身份出版的作品。除非另有书面约定，此类使用不需要再次取得贡献者许可，也不产生稿酬、版税或其他报酬义务。
 
 RDMA101 的公开文档版本会持续保留。上述出版权安排并不意味着项目作者可以撤回已经公开发布的 RDMA101 文档，也不影响读者和贡献者在 CC BY-NC-SA 4.0 条款下继续访问、分享和改编公开版本。
 
@@ -88,6 +95,6 @@ RDMA101 的公开文档版本会持续保留。上述出版权安排并不意味
 - 非商业使用：未经相关版权持有人许可，不得用于商业用途；
 - 相同方式共享：如果改编这些材料，需要以相同许可发布改编内容。
 
-每位贡献者保留自己贡献内容的版权。与此同时，项目作者 Feng Ren 保留基于 RDMA101 全部材料，包括社区贡献内容，创作、改写、整理并以独立作者身份出版文章、讲义、书籍、课程或其他作品的权利。
+每位贡献者保留自己贡献内容的版权。与此同时，项目发起人保留基于 RDMA101 全部材料，包括社区贡献内容，创作、改写、整理并以独立作者身份出版文章、讲义、书籍、课程或其他作品的权利。
 
 RDMA101 的公开文档版本会持续保留，并继续按照 CC BY-NC-SA 4.0 条款提供给公众访问、分享和改编。第三方商业使用 RDMA101 文档材料仍需提前获得相关版权持有人的书面许可。
