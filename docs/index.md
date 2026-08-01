@@ -6,7 +6,7 @@ RDMA 与传统 TCP socket 编程存在显著差异。RDMA 程序不仅需要描�
 
 本课程按照由浅入深的顺序组织：首先运行一个最小 RDMA 程序，然后解释其背后的编程模型；接着分析一次 RDMA 请求在系统内部的执行路径，再讨论常见优化方法；最后通过真实系统案例理解 RDMA 在工程系统中的使用方式。
 
-项目源码、示例程序和文档构建配置托管在 [GitHub: alogfans/RDMA101](https://github.com/alogfans/RDMA101)。在线文档中的每一页也可以通过页面右上角的 GitHub 入口跳转到对应源码。
+项目源码、示例程序和文档构建配置托管在 [GitHub: alogfans/RDMA101](https://github.com/alogfans/RDMA101)。页面右上角的 GitHub 入口可进入项目仓库；涉及示例代码的正文，会在相应位置标注源码链接。
 
 ## 课程路线
 

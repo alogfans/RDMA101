@@ -123,22 +123,15 @@ flowchart LR
     A["应用程序"] -->|"ibv_post_send"| SQ
     A -->|"ibv_post_recv"| RQ
 
-    subgraph QP["Queue Pair"]
-        direction TB
-        SQ["Send Queue"]
-        RQ["Receive Queue"]
-    end
-
+    SQ["Send Queue"]
+    RQ["Receive Queue"]
     SQ --> NIC["RDMA NIC"]
     RQ --> NIC
     NIC --> CQ["Completion Queue"]
-    CQ -->|"ibv_poll_cq"| A
-
-    classDef dashed stroke-dasharray: 5 5
-    class QP dashed
+    A -->|"ibv_poll_cq"| CQ
 ```
 
-投递到队列中的请求称为 work request，简称 WR。WR 描述网卡要做什么：操作类型是什么，本地 buffer 在哪里，长度是多少，使用哪个 `lkey`；如果是 RDMA WRITE、RDMA READ 或 Atomic，还要提供远端地址和 `rkey`。应用提交 WR 之后，网卡异步读取队列并执行请求。
+Send Queue 和 Receive Queue 共同构成一个 queue pair。投递到队列中的请求称为 work request，简称 WR。WR 描述网卡要做什么：操作类型是什么，本地 buffer 在哪里，长度是多少，使用哪个 `lkey`；如果是 RDMA WRITE、RDMA READ 或 Atomic，还要提供远端地址和 `rkey`。应用提交 WR 之后，网卡异步读取队列并执行请求。
 
 请求执行完成后，网卡不会直接调用应用函数，而是把完成记录写入 completion queue，简称 CQ。应用通过 polling 或事件通知从 CQ 中取出 work completion，简称 WC，并根据其中的状态判断操作是否成功。
 
