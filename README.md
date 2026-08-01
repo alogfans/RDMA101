@@ -6,7 +6,7 @@ Mooncake TE 面向 AI 推理、KVCache 迁移、分布式缓存和异构存储�
 
 因此，RDMA101 的目标不是替代 Verbs API 手册，也不是编写一份 Mooncake TE 操作说明。它关注的是二者之间的空白：从第一个可运行的 RDMA 程序出发，逐步建立 RDMA 的编程模型，理解一次传输在系统内部的执行过程，掌握常见优化方法，并最终回到真实系统中分析设计取舍。
 
-[![Documentation](https://img.shields.io/badge/docs-online-blue)](https://rdma101.renfeng.org)
+[![Documentation](https://img.shields.io/badge/docs-online-blue)](https://renfeng.org/RDMA101/)
 [![License](https://img.shields.io/badge/license-CC%20BY--NC--SA-green)](LICENSE)
 
 ## 内容结构
