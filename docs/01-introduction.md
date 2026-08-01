@@ -301,7 +301,7 @@ perftest 的结果主要看 client 端回显。client 端输出示例如下：
 
 ## 6. 单边 RDMA WRITE 样例
 
-在基础 RDMA WRITE 测试通过后，可以通过一个最小程序观察单边 RDMA 的基本结构。样例放在 `examples/one_sided_write/` 目录下，它使用 TCP 作为控制通道交换连接信息，再由 client 发起一次 RDMA WRITE，把字符串直接写入 server 注册好的内存。
+在基础 RDMA WRITE 测试通过后，可以通过一个最小程序观察单边 RDMA 的基本结构。样例放在 `examples/one_sided_write/` 目录下，源码可在 [GitHub](https://github.com/alogfans/RDMA101/tree/main/examples/one_sided_write) 查看。它使用 TCP 作为控制通道交换连接信息，再由 client 发起一次 RDMA WRITE，把字符串直接写入 server 注册好的内存。
 
 ```mermaid
 sequenceDiagram

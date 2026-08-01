@@ -1,7 +1,13 @@
 site_name: RDMA101
-site_url: https://renfeng.org
+site_url: https://renfeng.org/RDMA101/
+repo_url: https://github.com/alogfans/RDMA101
+repo_name: alogfans/RDMA101
+edit_uri: edit/main/docs/
 theme:
   name: material
+  features:
+    - content.action.edit
+    - content.action.view
 extra_css:
   - stylesheets/extra.css
 markdown_extensions:
