@@ -228,7 +228,7 @@ client 端后启动，并在命令末尾指定 server IP：
 
 ```bash
 # client
-ib_write_bw -d mlx5_0 172.31.32.3
+ib_write_bw -d mlx5_0 10.10.0.3
 ```
 
 第一次运行时可以先使用 `ib_write_bw` 的默认选择，让程序自己确定端口号和 GID index。只有在默认选择失败，或者需要严格复现实验条件时，再显式指定这些参数。
