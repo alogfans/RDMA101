@@ -43,7 +43,15 @@ nav:
       - 1.1 Hello RDMA: 01-introduction/01-hello-world.md
   - 第二篇：编程模型:
       - 02-programming-model/index.md
-      - 2.1 RDMA WRITE 范例解读: 02-programming-model/01-one-sided-write.md
+      - 2.1 第一个 RDMA 程序: 02-programming-model/01-first-rdma-program.md
+      - 2.2 Context 与 Protection Domain: 02-programming-model/02-context-and-pd.md
+      - 2.3 Memory Region: 02-programming-model/03-mr.md
+      - 2.4 Queue Pair: 02-programming-model/04-qp.md
+      - 2.5 Completion Queue: 02-programming-model/05-cq.md
+      - 2.6 SEND 与 RECV: 02-programming-model/06-send-recv.md
+      - 2.7 RDMA WRITE: 02-programming-model/07-rdma-write.md
+      - 2.8 RDMA READ: 02-programming-model/08-rdma-read.md
+      - 2.9 Atomic 操作: 02-programming-model/09-atomic.md
   - 第三篇：机制探秘:
       - 03-internals/index.md
   - 第四篇：优化技巧:
