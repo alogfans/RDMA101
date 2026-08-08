@@ -371,7 +371,7 @@ make -C examples/one_sided_write
 client 端后启动，并指定 server IP：
 
 ```bash
-./examples/one_sided_write/one_sided_write --client 172.31.32.3 -d mlx5_0 \
+./examples/one_sided_write/one_sided_write --client 10.10.10.3 -d mlx5_0 \
   --message "hello one-sided rdma"
 ```
 
@@ -379,7 +379,7 @@ client 端后启动，并指定 server IP：
     如果使用 RoCE/RXE 且默认 GID 选择不能工作，可以参考 perftest 输出，显式指定 GID index：
     ```bash
     ./examples/one_sided_write/one_sided_write --server -d mlx5_0 --gid-index 3
-    ./examples/one_sided_write/one_sided_write --client 172.31.32.3 -d mlx5_0 --gid-index 3
+    ./examples/one_sided_write/one_sided_write --client 10.10.10.3 -d mlx5_0 --gid-index 3
     ```
 
 ### 你应该看到什么
