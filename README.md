@@ -50,29 +50,6 @@ Mooncake TE 面向 AI 推理、KVCache 迁移、分布式缓存和异构存储�
 
 此外，RDMA101 也希望沉淀为一份面向 AI 编程助手的 RDMA 领域语料库。通过将术语、对象关系、数据路径和常见错误组织在同一套文档中，可以为代码理解、排错建议、实验步骤生成和性能现象解释提供更可靠的上下文。
 
-## 当前状态
-
-项目仍处于早期阶段。当前采用“篇/章”两级结构。每一篇都有 `index.md` 作为篇首页，具体正文按章节放在对应目录下；第三到第五篇先保留篇首页，后续逐章补充。
-
-```text
-docs/
-  index.md
-  01-introduction/
-    index.md
-    01-hello-world.md
-  02-programming-model/
-    index.md
-    01-one-sided-write.md
-  03-internals/
-    index.md
-  04-optimization/
-    index.md
-  05-case-studies/
-    index.md
-```
-
-后续将优先补充可运行示例、实验环境说明、常见错误排查路径，以及 Mooncake TE 中 RDMA transport 与底层 RDMA 概念之间的对应关系。
-
 ## 贡献
 
 欢迎提交文档修正、概念解释、实验代码、排障记录、系统案例和论文解读。尤其欢迎真实环境中的 RDMA 或 Mooncake TE 排障记录，包括问题现象、软硬件环境、排查过程和最终原因。

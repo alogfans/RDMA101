@@ -46,27 +46,6 @@ RDMA 与传统 TCP socket 编程存在显著差异。RDMA 程序不仅需要描�
 
 此外，本课程也希望沉淀为一份面向 AI 编程助手的 RDMA 领域语料库，为代码理解、排错建议、实验步骤生成和性能现象解释提供可靠上下文。
 
-## 当前结构
-
-```text
-docs/
-  index.md
-  01-introduction/
-    index.md
-    01-hello-world.md
-  02-programming-model/
-    index.md
-    01-one-sided-write.md
-  03-internals/
-    index.md
-  04-optimization/
-    index.md
-  05-case-studies/
-    index.md
-```
-
-后续将优先补充可运行示例、实验环境说明、常见错误排查路径，以及 Mooncake TE 中 RDMA transport 与底层 RDMA 概念之间的对应关系。
-
 ## 贡献
 
 欢迎提交文档修正、概念解释、实验代码、排障记录、系统案例和论文解读。尤其欢迎真实环境中的 RDMA 或 Mooncake TE 排障记录，包括问题现象、软硬件环境、排查过程和最终原因。
