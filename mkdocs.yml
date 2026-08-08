@@ -40,7 +40,8 @@ nav:
   - 首页: index.md
   - 第一篇：快速入门:
       - 01-introduction/index.md
-      - 1.1 Hello RDMA: 01-introduction/01-hello-world.md
+      - 1.1 从 TCP 到 RDMA: 01-introduction/01-tcp-to-rdma.md
+      - 1.2 环境配置与第一个 RDMA 程序: 01-introduction/02-environment-and-first-program.md
   - 第二篇：编程模型:
       - 02-programming-model/index.md
       - 2.1 第一个 RDMA 程序: 02-programming-model/01-first-rdma-program.md
