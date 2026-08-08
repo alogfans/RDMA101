@@ -399,8 +399,9 @@ struct ibv_mr *mr_data = ibv_reg_mr(pd_data, data_buf, size, ...);
 
 !!! note "下一步"
     有了 Context 和 PD，我们就可以创建其他资源了：
-    - **CQ（Completion Queue）** - 网卡写入完成记录的地方
-    - **MR（Memory Region）** - 向网卡注册的内存区域
-    - **QP（Queue Pair）** - 发送和接收请求的队列
+
+    - **CQ（Completion Queue）** — 网卡写入完成记录的地方
+    - **MR（Memory Region）** — 向网卡注册的内存区域
+    - **QP（Queue Pair）** — 发送和接收请求的队列
 
     接下来的三章分别深入讲解这些资源。

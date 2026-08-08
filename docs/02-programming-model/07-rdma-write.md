@@ -514,5 +514,6 @@ if (n > 0 && wc.status != IBV_WC_SUCCESS) {
 
 !!! note "下一步"
     RDMA WRITE 是最常用的单边操作，适合高效的数据推送。下一章会介绍：
+
     - **2.8 RDMA READ**：单边读取，主动拉取数据
     - **2.9 Atomic**：原子操作，分布式同步

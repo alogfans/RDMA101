@@ -312,7 +312,7 @@ ibv_modify_qp(qp, &attr, attr_mask);
 ```
 
 !!! note "硬件限制很重要"
-    某些硬件（尤其是老设备或模拟设备）的 `max_dest_rd_atomic` 和 `max_rd_atomic` 限制很低。如果你的程序尝试超过这个限制，`ibv_post_send` 会返回错误或产生 `IBV_WC_REM_OP_ERR`。
+    某些硬件（尤其是老设备或模拟设备）的 `max_dest_rd_atomic` 和 `max_rd_atomic` 限制很低。如果程序尝试超过这个限制，`ibv_post_send` 会返回错误或产生 `IBV_WC_REM_OP_ERR`。
 
 ### 超限的错误
 
@@ -445,4 +445,5 @@ if (n > 0 && wc.status != IBV_WC_SUCCESS) {
 
 !!! note "下一步"
     RDMA READ 适合"按需拉取"的场景，但延迟比 RDMA WRITE 高。下一章会介绍：
+
     - **2.9 Atomic**：原子操作，分布式同步

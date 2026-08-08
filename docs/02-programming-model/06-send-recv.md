@@ -231,7 +231,7 @@ if (ibv_post_recv(qp, &wr, &bad_wr)) {
 - WC 生成 = 数据已在缓冲区中，可直接访问
 
 !!! note "WC 生成时数据已可用"
-    当 RECV WC 生成时，数据**已经在你的缓冲区中**，可以直接访问。你不需要任何额外的同步操作——网卡已经完成了 DMA 写入。
+    当 RECV WC 生成时，数据**已经在接收缓冲区中**，可以直接访问。不需要任何额外的同步操作——网卡已经完成了 DMA 写入。
 
 ### 完整示例：接收方
 
@@ -452,7 +452,7 @@ ibv_modify_qp(qp, &attr, attr_mask);
 | **用途** | 小元数据传递、通知机制 |
 
 !!! note "Immediate 数据的实际用途"
-    最典型的用途是通知机制。比如 RDMA WRITE 是单边的，远端不知道数据写入了。你可以用 RDMA WRITE with IMM：数据写入远端，同时发送一个 32 位通知，远端收到 RECV WC 时就知道数据已经写好了。
+    最典型的用途是通知机制。比如 RDMA WRITE 是单边的，远端不知道数据写入了。可以使用 RDMA WRITE with IMM：数据写入远端，同时发送一个 32 位通知，远端收到 RECV WC 时就知道数据已经写好了。
 
 ### 投递 SEND with Immediate
 
@@ -576,6 +576,7 @@ ibv_post_send(qp, &wr, &bad_wr);
 
 !!! note "下一步"
     SEND/RECV 是 RDMA 双边通信的基础，适合控制消息传递和需要双方确认的场景。接下来的章节会介绍单边操作：
+
     - **2.7 RDMA WRITE**：单边写入，远端 CPU 不参与
     - **2.8 RDMA READ**：单边读取，主动拉取数据
     - **2.9 Atomic**：原子操作，分布式同步
