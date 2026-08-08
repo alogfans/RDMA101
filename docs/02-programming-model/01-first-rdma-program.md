@@ -96,6 +96,7 @@ flowchart TB
 答案是：**RDMA 替代的是 TCP 的数据搬运功能，但不能替代 TCP 的协商功能**。
 
 想象你要给朋友寄东西：
+
 - 你需要先打电话告诉朋友："我要给你寄个包裹"（控制信息）
 - 快递公司直接把包裹送到你家门口（数据搬运）
 
@@ -198,6 +199,7 @@ buffer ←→ 网卡（CPU 不参与）
 **零拷贝的代价：必须固定 VA→PA 映射**
 
 你用 `malloc` 分配的是**虚拟地址（VA）**，程序运行时虚拟地址到物理地址（PA）的映射可能变化：
+
 - 操作系统可能换页到不同物理位置
 - 虚拟内存可能被换出到磁盘再换回
 
@@ -217,10 +219,12 @@ s->mr = ibv_reg_mr(s->pd, s->buffer, BUFFER_SIZE, access);
 ```
 
 注册后，会得到两个 key：
+
 - `lkey`（local key）：本端引用这个内存时用
 - `rkey`（remote key）：远端引用这个内存时用
 
 **远端地址 ≠ 访问权限**。client 想写 server 的内存，必须同时知道：
+
 1. 这段内存的**地址**（`addr`）
 2. 这段内存的**访问凭证**（`rkey`）
 
@@ -232,6 +236,7 @@ s->mr = ibv_reg_mr(s->pd, s->buffer, BUFFER_SIZE, access);
 首先理解 QP 的本质：**QP 是通信双方之间的专用通道**。
 
 每个 QP 由一对队列组成：
+
 - **Send Queue（SQ）**：存放本端要发送的请求
 - **Receive Queue（RQ）**：存放本端准备接收远端消息的缓冲区
 
@@ -270,6 +275,7 @@ ibv_modify_qp(qp, &attr, IBV_QP_STATE | IBV_QP_TIMEOUT | ...);
 ```
 
 **为什么要两步？**
+
 - **RTR**（Ready to Receive）："我已经准备好接收来自这个特定远端 QP 的消息"
 - **RTS**（Ready to Send）："我已经准备好向这个特定远端 QP 发送消息"
 
@@ -370,6 +376,7 @@ printf("server: buffer after RDMA WRITE: \"%s\"\n", state.buffer);
 **server 端没有任何"接收"数据的代码**。数据已经在那里了，因为 client 的 RDMA WRITE 把它写进去了。
 
 这就是 one-sided RDMA 操作的威力：
+
 - 发起方（client）单方面完成数据搬运
 - 接收方（server）的 CPU 从头到尾不参与
 
@@ -390,6 +397,7 @@ printf("server: buffer after RDMA WRITE: \"%s\"\n", state.buffer);
 
 !!! note "你已经看到了全貌"
     本章建立的四个阶段框架（控制通道 → 资源创建 → 连接 QP → 投递请求）是所有 RDMA 程序的基础。后续章节会深入每个细节：
+    
     - QP 状态机的完整转换逻辑
     - 错误处理和重试机制
     - 资源生命周期管理

@@ -31,6 +31,7 @@ Context 本质上是程序与 RDMA 设备的会话入口。类比一下：
 - **Context 及其关联对象只作用于该设备** —— 通过某个 Context 创建的 PD、CQ、QP、MR 都只能用于这一个设备。如果需要使用多张网卡（多卡聚合），需要为每个设备分别创建 Context 及其所有资源
 
 通过 Context，程序可以：
+
 - 询问设备"你能做什么"（查询能力）
 - 要求设备"为我创建资源"（分配 PD、CQ、QP、MR）
 - 查询端口状态
@@ -44,6 +45,7 @@ Protection Domain（PD）是 RDMA 安全模型的基础。它实现了一个简�
 **只有同一 PD 内的资源才能互相访问。**
 
 具体来说：
+
 - QP 要访问某个 MR，两者必须在同一个 PD 中
 - QP 和 AH（Address Handle）也必须在同一个 PD 中
 - 不同 PD 的资源被完全隔离
@@ -199,12 +201,14 @@ printf("  Max CQ entries: %d\n", device_attr.max_cqe);
 ```
 
 这些数字告诉你资源的上限。例如：
+
 - `max_qp`：最多可以创建多少个 Queue Pair
 - `max_qp_wr`：每个 QP 最多有多少个未完成的 Work Request
 - `max_sge`：一个 WR 最多可以包含多少个 Scatter/Gather 元素
 
 !!! note "这些限值很重要"
     某些硬件（特别是老设备或模拟设备）的资源限值很低。例如：
+
     - 老的 `rxe` 软件模拟设备的 `max_qp` 可能只有几十个
     - 某些低端或特殊网卡的 `max_sge` 可能只有 1-2 个
     - `max_cqe` 限制了 CQ 的深度，影响并发请求数
@@ -291,6 +295,7 @@ if (ibv_dealloc_pd(pd)) {
 
 !!! note "释放顺序很重要"
     只有当 PD 内没有其他资源（QP、MR、AH、SRQ）时，才能释放 PD。这意味着清理顺序是：
+    
     1. 先销毁所有关联的 QP
     2. 先注销所有关联的 MR
     3. 最后才释放 PD
