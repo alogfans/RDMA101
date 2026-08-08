@@ -112,7 +112,7 @@ RDMA 就是远程 DMA：一台机器的 RDMA 网卡，在本端程序提交请�
 
 本节只介绍 RDMA 区别于 TCP socket 的几个关键特点。protection domain、memory region、queue pair、completion queue 等对象之间的完整关系，将在第二篇"编程模型"中展开。
 
-### 1.1.4.1 远端内存访问
+### 远端内存访问
 
 RDMA 与 TCP socket 的第一个核心区别在于内存访问方式。
 
@@ -120,7 +120,7 @@ TCP socket 提供的是字节流。应用把数据写入 socket，远端应用�
 
 这并不意味着任意机器都能读写任意远端内存。远端内存必须先被注册，并授予相应权限；发起 RDMA READ、RDMA WRITE 或 Atomic 操作时，还需要使用远端提供的地址和 `rkey`。因此，RDMA 的”直接访问”建立在明确授权之上。
 
-### 1.1.4.2 更短的数据路径
+### 更短的数据路径
 
 传统 TCP 程序的数据路径通常经过内核网络协议栈。应用调用 `send` 或 `recv` 后，内核负责 socket buffer 管理、TCP/IP 协议处理、拥塞控制、重传和唤醒通知。
 
@@ -131,7 +131,7 @@ RDMA 的数据路径不同。资源建立完成后，应用可以通过用户态
 
 RDMA 也常与 zero copy 一起讨论。zero copy 就是让网卡通过 DMA 直接访问应用指定的内存区域，避免数据在应用 buffer 和内核 buffer 之间反复复制。为此，应用必须把相关内存注册为 memory region，并在提交请求时使用对应的 `lkey`；如果允许远端访问，还需要把远端地址和 `rkey` 交给对端。
 
-### 1.1.4.3 异步队列
+### 异步队列
 
 RDMA 不是同步的函数调用模型，而是异步队列模型。一个 queue pair，简称 QP，维护两个队列：send queue 和 receive queue。应用发起 SEND、RDMA WRITE、RDMA READ 或 Atomic 操作时，把请求投递到 send queue；应用准备接收 SEND 消息时，把接收 buffer 投递到 receive queue。
 
@@ -161,7 +161,7 @@ Send Queue 和 Receive Queue 共同构成一个 queue pair。投递到队列中�
 
 更进一步说，RDMA completion 通常不表示远端应用已经处理了这条数据；如果需要应用级确认，仍然要由协议自己设计。
 
-### 1.1.4.4 RDMA 操作类型
+### RDMA 操作类型
 
 RDMA 提供了几种不同的操作类型。
 
@@ -181,7 +181,7 @@ RDMA 提供了几种不同的操作类型。
 
 环境准备分为三步：选择实验环境，安装必要软件，确认系统能看到 RDMA 设备。更具体的对象模型和性能调优将在后续篇章展开。
 
-### 1.1.5.1 真实网卡：InfiniBand 与 RoCE
+### 真实网卡：InfiniBand 与 RoCE
 
 真实 RDMA 网卡通常工作在两类网络上：**InfiniBand** 和 **RoCE**。
 
@@ -193,7 +193,7 @@ RDMA 提供了几种不同的操作类型。
 !!! note "软件安装"
     Linux 上常用的基础软件来自 `rdma-core`。如果使用 Mellanox/NVIDIA 网卡，在安装厂商驱动及配套软件后，这些基础软件通常已经安装好了。
 
-### 1.1.5.2 软件模拟：Soft-RoCE/RXE
+### 软件模拟：Soft-RoCE/RXE
 
 没有真实 RDMA 网卡时，可以使用 Soft-RoCE（RXE）。RXE 是 Linux 内核提供的一个功能，支持在普通以太网接口上模拟一个 RDMA 设备。它的价值在于门槛低：一台普通 Linux 机器就可以完成基本 RDMA 编程实验。
 
@@ -225,7 +225,7 @@ sudo rdma link add rxe0 type rxe netdev eth0
 sudo rdma link delete rxe0
 ```
 
-### 1.1.5.3 第一次环境验证
+### 第一次环境验证
 
 环境准备完成后，我们需要确认三件事：设备存在、端口正常、能够传输数据。
 
