@@ -41,10 +41,10 @@ nav:
   - 第一篇：快速入门:
       - 01-introduction/index.md
       - 1.1 从 TCP 到 RDMA: 01-introduction/01-tcp-to-rdma.md
-      - 1.2 环境配置与第一个 RDMA 程序: 01-introduction/02-environment-and-first-program.md
+      - 1.2 第一个 RDMA 程序: 01-introduction/02-environment-and-first-program.md
   - 第二篇：编程模型:
       - 02-programming-model/index.md
-      - 2.1 第一个 RDMA 程序: 02-programming-model/01-first-rdma-program.md
+      - 2.1 RDMA WRITE 范例解读: 02-programming-model/01-first-rdma-program.md
       - 2.2 Context 与 Protection Domain: 02-programming-model/02-context-and-pd.md
       - 2.3 Memory Region: 02-programming-model/03-mr.md
       - 2.4 Queue Pair: 02-programming-model/04-qp.md
