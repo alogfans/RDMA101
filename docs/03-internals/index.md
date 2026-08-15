@@ -1,51 +1,51 @@
 # 第三篇：机制探秘
 
-RDMA 程序的表面结构由一组明确的 Verbs 对象组成：程序打开设备，创建 PD、MR、QP、CQ，把请求投递到 QP，再从 CQ 取得完成结果。到这一层为止，一个基本 RDMA 程序已经可以运行。但仅停留在 API 层面，很多现象仍然难以解释：内存注册为什么开销很高，`ibv_post_send` 为什么不表示传输完成，CQ 为什么会溢出，RoCE 网络配置为什么会影响用户态程序，GPU 显存为什么可以直接成为 RDMA 数据路径的一部分。
+RDMA 程序在 API 层由一组 Verbs 对象组成：设备、Context、PD、MR、CQ、QP、WR 和 WC。前两篇已经说明这些对象如何创建和使用。到这一层为止，一个基本程序可以完成连接、投递请求并取得完成结果；但许多现象仍不能只靠 API 形式解释，例如内存注册为什么昂贵，`ibv_post_send` 为什么不等于传输完成，CQ 为什么可能溢出，RoCE 网络配置为什么会改变程序表现，GPU 显存为什么能够进入 RDMA 数据路径。
 
-第三篇讨论这些问题。本篇不是驱动开发手册，也不是网卡硬件手册；它面向 RDMA 程序员，目标是把 API 对象向下翻译一层。Context、PD、MR、QP、CQ 在程序中是 API 对象，在系统内部则分别关联到用户态 provider、内核驱动、设备资源、DMA 映射、PCIe 拓扑和网络路径。理解这些联系，是后续讨论性能优化、故障诊断和真实系统设计的基础。
+第三篇把这些 API 对象向系统内部推进一层。Context 不只是一个句柄，它连接到用户态 provider 和内核 uverbs 设备；MR 不只是 `lkey` 和 `rkey`，它对应页固定、DMA 映射、IOMMU 转换和设备侧 memory key；QP 不只是发送队列和接收队列的抽象，它在设备侧有 QP context，在用户态有可映射的队列内存和 doorbell 区域；CQ 不只是一个轮询接口，它对应设备写回的 CQE ring。理解这些对象的内部位置，才能把程序现象同系统行为联系起来。
 
-本篇区分三类内容。第一类是 Verbs 编程语义，例如 WR 投递、WC 返回和 MR 权限校验；第二类是 Linux RDMA 栈中的实现路径，例如 provider、内核 uverbs、DMA 映射和异步事件；第三类是 Mellanox/NVIDIA mlx5 设备上的实现细节，例如 WQE/CQE 格式、UAR、BF register、doorbell、ODP、RoCE 拥塞控制和 GPUDirect RDMA。第一类可以作为编程模型依赖，后两类则需要结合实际设备、驱动版本和平台配置判断。
+本篇的实现讨论以 Mellanox/NVIDIA mlx5 路径为主线。mlx5 provider 运行在用户态，负责把 Verbs WR 编码为 mlx5 设备可消费的 WQE，并通过 doorbell 通知设备；内核中的 `mlx5_ib` 把 mlx5 设备接入 Linux RDMA 子系统，管理 QP、CQ、MR 等 RDMA 对象；更底层的 `mlx5_core` 负责设备初始化、固件命令、PCIe 资源和事件处理。`rdma-core/providers/mlx5/` 与 Linux 内核 mlx5 驱动展示了这条软件路径的形状。它们不是应用程序需要依赖的接口，却能帮助解释 mlx5 设备在 Verbs 语义下暴露出来的行为。
 
-本篇的实现讨论以 mlx5 为主线。文中出现的“provider”“doorbell”“WQE”“CQE”等实现对象，优先按照 Mellanox/NVIDIA ConnectX 系列及其 `mlx5` 驱动解释；其他 RNIC 的设计可作类比，但不默认等同。[linux-rdma/rdma-core](https://github.com/linux-rdma/rdma-core) 中的 `providers/mlx5/` 目录提供了用户态 provider 的实现证据，可用于确认 Verbs API 在 mlx5 数据路径上如何转换为 WQE、doorbell、CQE 等设备操作。
+需要区分三类边界。第一类是 Verbs 语义，例如 WR 投递、WC 返回、MR 权限校验和 RC 传输保证；这些内容构成跨设备编程模型。第二类是 Linux RDMA 栈的实现路径，例如 provider、uverbs、DMA mapping、mmap、异步事件和 sysfs 计数器；这些内容解释 Linux 上的资源管理和诊断入口。第三类是 mlx5 设备的实现特征，例如 WQE/CQE 格式、UAR、BlueFlame、doorbell record、MKey、RoCE 拥塞控制和 GPUDirect RDMA；这些内容帮助理解 ConnectX/BlueField 这类设备的实际表现，但不应直接推广为所有 RNIC 的硬件设计。
 
 ## 章节安排
 
-### 3.1 一次 RDMA 操作的完整路径
+### 3.1 一次 RDMA WRITE 的完整路径
 
-从 RDMA WRITE 开始，说明一条 WR 从应用进入 provider，再变成 WQE、通知网卡、触发 DMA、穿过网络并最终生成 CQE 的过程。本章建立第三篇的总路线。
+从一条 RDMA WRITE 的 Send WR 开始，沿 `ibv_post_send`、mlx5 provider、WQE、doorbell、设备 DMA、远端 key 校验和 CQE 写回展开完整路径。后续章节都围绕这条路径中的某一段继续加深。
 
 ### 3.2 用户态 Verbs、Provider 与内核驱动
 
-说明 `libibverbs`、mlx5 provider、kernel RDMA subsystem 和 `mlx5_ib`/`mlx5_core` 的分工。重点讨论“绕过内核”在 RDMA 中的准确含义：数据路径尽量避免传统内核协议栈，但资源创建、内存注册、映射和事件处理仍离不开内核。
+说明 `libibverbs`、mlx5 provider、kernel RDMA subsystem、`mlx5_ib` 和 `mlx5_core` 的分工。“绕过内核”在 RDMA 中只描述高频数据路径；资源创建、权限控制、内存注册、队列映射和事件上报仍由内核参与。
 
-### 3.3 Memory Registration、DMA 与 IOMMU
+### 3.3 Memory Registration、MKey 与 DMA 地址
 
-解释普通用户态内存为什么需要注册后才能被网卡访问。内容包括页固定或按需分页、DMA 地址映射、IOMMU、设备侧地址转换缓存、`lkey`/`rkey` 与访问校验。
+解释普通用户态内存为什么必须注册后才能交给设备 DMA。重点包括页固定与 ODP、DMA 地址与 IOMMU、设备侧 MKey、`lkey`/`rkey`、访问权限和注册成本。
 
 ### 3.4 QP、WQE、CQE 与 Doorbell
 
-把第二篇的 QP/CQ 模型进一步展开到 mlx5 设备执行层。讨论 SQ/RQ、WQE、CQE、UAR、BF register、doorbell、doorbell record、MMIO、selective signaling，以及这些机制为什么会影响吞吐和尾延迟。
+展开 QP 和 CQ 在 mlx5 路径中的软件可见结构。Send Queue、Receive Queue、doorbell record、UAR、BlueFlame、CQE owner bit 和 selective signaling 共同决定请求如何从用户态队列进入设备流水线，又如何以 completion 的形式返回。
 
 ### 3.5 RC 可靠传输机制
 
-围绕 RC QP 讨论可靠连接如何成立。内容包括 PSN、ACK/NAK、重传、RNR、timeout、path MTU，以及错误完成为什么最终回到本端 CQ。
+讨论 Reliable Connected QP 的可靠传输语义。PSN、ACK/NAK、重传、RNR、timeout 和 path MTU 决定了 RC 如何处理丢包、乱序、接收端未准备好和远端无响应等情况。
 
 ### 3.6 RoCE 网络路径
 
-讨论 RoCE 把 RDMA 放在 Ethernet/IP 网络中以后引入的问题。重点包括 GID、GID index、RoCE v1/v2、MTU、PFC、ECN、DCQCN、交换机和网卡计数器。本章为后续网络侧诊断打基础。
+说明 RoCE 把 RDMA 放入 Ethernet/IP 网络后引入的地址和网络条件。GID、GID index、RoCE v1/v2、MTU、PFC、ECN、DCQCN、交换机队列和网卡计数器共同影响程序的成功率、延迟和吞吐。
 
-### 3.7 PCIe、NUMA、GPU 拓扑与缓存一致性
+### 3.7 PCIe、NUMA 与缓存可见性
 
-解释网卡、CPU、内存和 GPU 在物理拓扑中的位置关系。内容包括 PCIe root complex、NUMA locality、CPU cache 与 DMA 可见性、IOMMU/ATS，以及 GPU-NIC 拓扑对 GPUDirect RDMA 的影响。
+把 RDMA 数据路径放回主机拓扑中观察。网卡、CPU、内存和 GPU 之间的 PCIe 层级、NUMA 归属、IOMMU/ATS 能力以及 DMA 与缓存一致性边界，会直接影响延迟、带宽和可见性。
 
 ### 3.8 GPUDirect RDMA
 
-重点讨论 GPU 显存进入 mlx5 RDMA 数据路径后的机制变化。内容包括 host staging 与 direct peer access 的差别，GPU BAR/BAR1、CUDA device memory、GPU memory 注册、`lkey`/`rkey`、CUDA stream 与 RDMA completion 的同步边界，以及容器、MIG、虚拟化和拓扑限制。
+重点讨论 GPU 显存作为 RDMA buffer 时的机制变化。GPU memory 的注册、peer-memory 或 dma-buf 映射、GPU-NIC 拓扑、BAR/BAR1、CUDA stream 顺序和 RDMA completion 之间存在额外边界，这些边界是 GPU-RDMA 程序正确性的核心。
 
 ### 3.9 观察与诊断
 
-把本篇机制收束到排查方法。通过设备、端口、GID、PCIe、NUMA、GPU-NIC 拓扑、网卡计数器、错误完成和异步事件，建立一条从程序现象回到系统层次的诊断路径。
+把前面各章的机制反过来用于排查。错误 completion、异步事件、端口状态、GID 表、MTU、PFC/ECN 计数器、PCIe/NUMA/GPU 拓扑和系统日志，构成从程序现象回到系统原因的诊断路径。
 
 ## 主线
 
-第三篇的难度高于编程模型篇。关键不在于一次记住所有术语，而在于把它们放在同一条路径里：应用提交 WR，provider 和设备把它变成可执行请求，网卡通过 DMA 和网络完成数据搬运，CQE 把结果交还给应用。3.1 建立完整路径，3.3 和 3.4 展开 MR、QP、CQ 背后的设备机制。RoCE 环境对应 3.6 的网络路径；AI 训练、推理或 GPU 存储场景中的 RDMA，则对应 3.8 的 GPUDirect RDMA。
+第三篇的难度高于编程模型篇。关键不是记住每一个术语，而是把它们放在同一条执行路径中：应用提交 WR，provider 把 WR 写成设备队列项，doorbell 使网卡看到新工作，网卡通过 DMA 和网络完成数据搬运，CQE 把完成结果交还给应用。3.1 建立总路径，3.2 到 3.4 解释 Linux 与 mlx5 设备的执行边界，3.5 和 3.6 说明可靠传输与 RoCE 网络，3.7 和 3.8 进入主机拓扑和 GPU 显存，3.9 把这些机制用于诊断。
