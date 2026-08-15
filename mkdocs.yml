@@ -53,6 +53,7 @@ nav:
       - 2.7 RDMA WRITE: 02-programming-model/07-rdma-write.md
       - 2.8 RDMA READ: 02-programming-model/08-rdma-read.md
       - 2.9 Atomic 操作: 02-programming-model/09-atomic.md
+      - 2.10 错误完成与异步事件: 02-programming-model/10-error-and-events.md
   - 第三篇：机制探秘:
       - 03-internals/index.md
   - 第四篇：优化技巧:

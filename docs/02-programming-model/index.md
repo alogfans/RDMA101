@@ -2,9 +2,18 @@
 
 第一篇跑通了一个最小 one-sided RDMA WRITE 程序。第二篇在这个基础上展开 RDMA Verbs 的编程模型：内存如何授权给网卡，QP/CQ 如何组织异步请求，远端地址和 `rkey` 如何进入数据路径，completion 又表达什么语义。
 
-本篇按“程序框架 → 核心对象 → 核心操作”的顺序展开。阅读时可以把第一篇的样例放在旁边，对照每个对象在代码中的位置。
+本篇按“程序框架 → 核心对象 → 核心操作 → 错误与事件”的顺序展开。阅读时可以把第一篇的样例放在旁边，对照每个对象在代码中的位置。
 
-为了避免把 API 说明写成零散手册，本篇只把最常用、也最容易误解的 Verbs 语义放入正文：资源创建时的实际能力可能与请求值不同，设备能力查询给出的是上限而不是剩余配额，CQ 中的非成功 WC 不能按成功路径解释，以及 WRITE with Immediate 会消耗远端预投递的 Receive WR。读者如果需要逐个函数查阅参数和返回值，可以配合 RDMAmojo 的 libibverbs 文章阅读。
+本篇实验程序位于 `examples/programming_model/`。实验内容依次覆盖设备枚举、Context 打开、设备与端口能力查询、MR 注册、QP/CQ 创建，以及 SEND、WRITE、READ、Atomic 等操作的完成记录。阅读正文时，应把资源对象、API 参数和实验输出放在一起理解：API 参数说明调用形式，程序输出则显示资源状态和完成语义。
+
+```bash
+make -C examples/programming_model
+./examples/programming_model/01_device_info
+./examples/programming_model/02_resource_lifecycle
+./examples/programming_model/03_rc_loopback
+```
+
+当前机器如果没有 RDMA 设备，`01_device_info` 会打印 `Found 0 RDMA device(s)`。这表示实验环境尚未准备好，需要先配置真实网卡或 Soft-RoCE/RXE。
 
 ## 程序框架
 
@@ -38,3 +47,8 @@
 
 - [2.9 Atomic 操作](09-atomic.md)
   原子操作：Compare & Swap、Fetch & Add、分布式锁、无锁数据结构。
+
+## 错误与事件
+
+- [2.10 错误完成与异步事件](10-error-and-events.md)
+  编程模型中的异常通道：投递错误、WC error、async event 之间的区别，以及应用应承担的基本处理责任。

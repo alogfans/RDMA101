@@ -4,6 +4,13 @@
 
 RDMA 提供两类操作：**one-sided**（RDMA READ/WRITE/Atomic）和 **two-sided**（SEND/RECV）。SEND/RECV 是最接近传统 TCP socket 语义的 RDMA 操作，理解它是掌握 RDMA 双边通信的基础。
 
+本章实验使用 `examples/programming_model/03_rc_loopback.c`。实验的第一段采用 SEND/RECV：B 端先投递 RECV WR，A 端随后投递 SEND WR，两个完成最终都从 CQ 中取出。输出中 `[1] SEND/RECV` 下的 CQE 和 B 端 buffer 内容，对应本章讨论的双边完成语义。
+
+```bash
+make -C examples/programming_model
+./examples/programming_model/03_rc_loopback -d mlx5_0 -p 1 -g 0
+```
+
 ## 2.6.1 SEND/RECV 的使用场景
 
 RDMA 已经提供 READ、WRITE 和 Atomic 等单边操作，但许多通信仍然需要接收方获得明确的消息完成事件。
@@ -537,17 +544,11 @@ ibv_post_send(qp, &wr, &bad_wr);
 !!! note "UD QP 的接收缓冲区"
     如果使用 UD QP，接收缓冲区通常要额外预留 40 字节空间给 GRH。即使某些消息没有实际 GRH，按这个约定预留空间也能避免从 RC/UC 迁移到 UD 时出现接收长度和数据偏移错误。本教程主线以 RC 为背景，UD 细节会在高级主题中再展开。
 
-## 2.6.7 关键要点回顾
+## 2.6.7 本章小结
 
-| 概念 | 要点 |
-|------|------|
-| **双边操作** | 双方都参与，不同于 one-sided 操作 |
-| **必须提前投递 RECV WR** | 否则 RC 连接会进入 RNR 重试路径，重试耗尽后产生错误完成 |
-| **RNR 错误** | 接收方没有足够的 RECV WR，发送方会收到错误 |
-| **保持 RECV WR 水位线** | 避免耗尽，通常维持 8-16 个未完成的 RECV WR |
-| **Immediate 数据** | 32 位元数据，不占用缓冲区，原子传递 |
-| **Scatter-Gather** | 支持多缓冲区操作，减少拷贝 |
-| **完成语义** | SEND WC 表示远端已确认，RECV WC 表示数据已可访问 |
+SEND/RECV 是双边操作，发送方和接收方都要在数据路径中准备请求。接收方必须在消息到达前投递 RECV WR；如果 RC 连接上没有可用接收请求，发送方会进入 RNR 重试路径，重试耗尽后得到错误完成。因此，接收队列水位管理本身就是协议设计的一部分。
+
+SEND WC 和 RECV WC 的含义不同。发送方看到 SEND WC，表示本地发送请求已经完成；接收方看到 RECV WC，才表示接收缓冲区中的数据可以按应用协议解析。Immediate 数据和 Scatter-Gather 都是在这一基本语义上扩展出来的工具：前者携带少量通知信息，后者用多个缓冲区描述一次传输。
 
 !!! note "后续章节"
     SEND/RECV 是 RDMA 双边通信的基础，适合控制消息传递和需要接收方获得完成事件的场景。后续章节将转向单边写入、单边读取和远端原子操作。

@@ -4,6 +4,16 @@
 
 本章讨论最基础的两个对象：Context 和 Protection Domain（保护域）。Context 是程序访问 RDMA 设备的入口；PD 则把 QP、MR、AH 等本地资源放进同一个访问域中，限制它们之间能否配合使用。
 
+本章实验使用 `examples/programming_model/01_device_info.c`。程序从设备列表开始，依次完成设备选择、`ibv_open_device`、设备能力查询、端口状态查询和 GID 查询。这一组动作构成 RDMA 程序初始化阶段的起点；后续 PD、CQ、QP 和 MR 的创建都以打开后的 `ibv_context` 为基础。
+
+```bash
+make -C examples/programming_model
+./examples/programming_model/01_device_info
+./examples/programming_model/01_device_info -d mlx5_0 -p 1 -g 0
+```
+
+输出中的 `phys_port_cnt`、`max_qp`、`max_cqe`、`port state` 和 `gid[0]` 分别来自设备属性、端口属性和 GID 表。它们说明程序已经越过设备枚举阶段，进入了基于 `ibv_context` 的查询阶段。
+
 ## 2.2.1 Context 与 PD 的作用
 
 Context 和 PD 是后续资源创建的基础。Context 连接应用与 RDMA 设备，PD 则组织同一设备上下文下的资源访问关系。理解这两个对象后，再看 MR、QP、CQ 的依赖关系会更清楚。
@@ -374,16 +384,11 @@ struct ibv_mr *mr_data = ibv_reg_mr(pd_data, data_buf, size, ...);
 !!! note "多 PD 是隔离手段，不是性能优化"
     多 PD 会增加管理复杂度，通常不会提升性能。只有确实需要资源隔离时才使用。
 
-## 2.2.7 关键要点回顾
+## 2.2.7 本章小结
 
-| 概念 | 核心要点 |
-|------|----------|
-| **Context** | 与设备的会话入口，所有资源都通过它创建 |
-| **PD** | 本地资源访问域，限定 QP、MR、AH 等资源的配合关系 |
-| **设备列表** | 用完要记得 `ibv_free_device_list` |
-| **端口状态** | 必须是 ACTIVE 才能用于通信 |
-| **资源释放顺序** | 先释放 PD 内的资源，最后释放 PD |
-| **多 PD** | 用于隔离，不是性能优化 |
+Context 是应用进入某个 RDMA 设备的入口，设备能力查询、端口查询以及后续资源创建都从它开始。设备列表只用于选择设备，打开设备后即可释放；已经得到的 `ibv_context` 不受释放设备列表影响。
+
+PD 则是同一 Context 下的资源访问域。QP、MR、AH 等对象只有处在匹配的 PD 中，才能按照 Verbs 规则配合使用。多个 PD 可以用于资源隔离，但它不是性能优化手段。销毁资源时，也应先释放 PD 内的 QP、MR、AH 等对象，最后再释放 PD。
 
 !!! note "后续章节"
     有了 Context 和 PD，程序就可以继续创建 CQ、MR 和 QP。接下来的几章会分别讨论完成队列、内存注册以及请求队列。

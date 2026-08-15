@@ -4,6 +4,13 @@
 
 本章讨论 RDMA WRITE。它是一种单边操作：发起方把本地数据写入远端已经授权的内存区域，远端 CPU 不参与这次数据搬运，也不会自动得到完成事件。
 
+本章实验使用 `examples/programming_model/03_rc_loopback.c`。实验的第二段采用 RDMA WRITE：A 端投递 WRITE WR，将 A 的 buffer 写入 B 的 MR，并等待 A 端的 WRITE WC。B 端没有投递 RECV WR，也不会因为基本 WRITE 得到 RECV WC；实验随后打印 B 端 buffer，用来观察远端内存已经发生变化。
+
+```bash
+make -C examples/programming_model
+./examples/programming_model/03_rc_loopback -d mlx5_0 -p 1 -g 0
+```
+
 ## 2.7.1 RDMA WRITE 的使用场景
 
 RDMA WRITE 适合由发起方主动推送数据的场景。与 SEND/RECV 相比，它不要求远端为每次数据到达提前投递 RECV WR，也不会在远端自动生成完成事件。本章只讨论这一操作在 Verbs 程序中的使用方式和语义边界。
@@ -469,17 +476,11 @@ if (n > 0 && wc.status != IBV_WC_SUCCESS) {
 }
 ```
 
-## 2.7.6 关键要点回顾
+## 2.7.6 本章小结
 
-| 概念 | 要点 |
-|------|------|
-| **单边操作** | 远端 CPU 不参与，直接写入远端内存 |
-| **必须知道远端 addr 和 rkey** | 通过控制面交换这些信息 |
-| **完成语义** | 发起方收到 WC，远端无通知 |
-| **WRITE with IMM** | 携带 32 位 `imm_data`，远端需预投递 RECV WR 并收到 RECV WC |
-| **同步语义** | 写完成 ≠ 远端应用已处理，通常需要同步 |
-| **错误处理** | 检查 WC status，常见错误是访问权限和长度 |
-| **应用场景** | 大数据传输、状态同步、分布式系统 |
+RDMA WRITE 由发起方主动把本地数据写入远端已经授权的内存。发起方必须通过控制面取得远端地址和 `rkey`，并在 WR 中给出本地 SGE、远端地址和远端 key。基本 RDMA WRITE 不消耗远端 Receive WR，也不会在远端自动生成 WC。
+
+发起方收到成功 WRITE WC，表示这条 WR 在 RDMA 语义下已经完成，本地源缓冲区可以按生命周期规则复用。但远端应用是否已经处理这段数据，仍取决于额外的同步机制。WRITE with Immediate 可以在写入的同时向远端 CQ 产生一个接收完成，但它会消耗远端预投递的 RECV WR，因此仍要纳入接收队列管理。
 
 !!! note "后续章节"
     RDMA WRITE 是最常用的单边操作，适合高效的数据推送。下一章将讨论 RDMA READ，即由发起方主动从远端拉取数据。

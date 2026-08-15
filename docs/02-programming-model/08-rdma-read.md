@@ -6,6 +6,13 @@ RDMA READ 适合按需加载场景：发起方决定何时读取，远端 CPU �
 
 与 SEND 或 WRITE with Immediate 不同，RDMA READ 不消耗远端 Receive WR。远端需要做的是提前注册并授权被读取的 MR，同时在 QP 状态中允许一定数量的 outstanding READ/Atomic 请求。
 
+本章实验使用 `examples/programming_model/03_rc_loopback.c`。实验的第三段采用 RDMA READ：B 端 buffer 先放入一段字符串，A 端随后投递 READ WR，将 B 端内容读回 A 端 buffer。READ WC 中的 `byte_len` 和 A 端 buffer 的最终内容，对应本章讨论的“完成后本地数据可用”这一语义。
+
+```bash
+make -C examples/programming_model
+./examples/programming_model/03_rc_loopback -d mlx5_0 -p 1 -g 0
+```
+
 ## 2.8.1 RDMA READ 的使用场景
 
 在说明代码前，先比较 RDMA READ 和 RDMA WRITE 的数据方向。
@@ -418,18 +425,11 @@ if (n > 0 && wc.status != IBV_WC_SUCCESS) {
 }
 ```
 
-## 2.8.6 关键要点回顾
+## 2.8.6 本章小结
 
-| 概念 | 要点 |
-|------|------|
-| **单边操作** | 发起方主动从远端读取，远端 CPU 不参与 |
-| **必须知道远端 addr 和 rkey** | 通过控制面交换这些信息 |
-| **完成语义** | 发起方收到 WC，包含 `byte_len`，远端无通知 |
-| **本地缓冲区** | 必须预先注册，并具有 LOCAL_WRITE 权限 |
-| **远端权限** | 必须有 REMOTE_READ 权限 |
-| **并发限制** | 受 `max_rd_atomic` 和 `max_dest_rd_atomic` 限制；不消耗远端 RECV WR |
-| **延迟** | 比 RDMA WRITE 高，需要往返 |
-| **应用场景** | 按需加载、远程缓存、数据库查询 |
+RDMA READ 由发起方主动从远端已授权内存中取回数据。WR 中的 SGE 描述本地接收缓冲区，因此本地 MR 需要允许本地写入；远端 MR 则需要 `IBV_ACCESS_REMOTE_READ` 权限。与 RDMA WRITE 一样，发起方也必须通过控制面取得远端地址和 `rkey`。
+
+READ 的成功 WC 表示数据已经写入本地缓冲区，可以由应用读取。远端不会因为基本 READ 得到 WC，也不消耗远端 Receive WR。由于 READ 包含请求和响应两个方向，它通常比 WRITE 更受往返延迟和 outstanding READ/Atomic 资源限制影响。
 
 !!! note "后续章节"
     RDMA READ 适合"按需拉取"的场景，但延迟比 RDMA WRITE 高。下一章会介绍远端 Atomic 操作。

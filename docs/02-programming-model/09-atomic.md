@@ -6,6 +6,13 @@
 
 在基础 Verbs 模型中，Atomic 通常只在可靠连接类传输上使用，例如 RC QP。它不消耗远端 Receive WR；远端需要提供的是带 `IBV_ACCESS_REMOTE_ATOMIC` 权限的 MR，以及 QP 上允许的 READ/Atomic 并发资源。
 
+本章实验使用 `examples/programming_model/03_rc_loopback.c`。实验的第四段在设备支持 Atomic 时执行 Compare & Swap：先把 B 端某个 8 字节变量设为 7，再由 A 端投递 CAS；远端值仍为 7 时，网卡将其改为 11，并把旧值写回 A 端 result buffer。输出中的 `old=7 remote_now=11` 对应 CAS 的返回值和远端更新结果。设备不支持 Atomic 时，这一段实验会被跳过。
+
+```bash
+make -C examples/programming_model
+./examples/programming_model/03_rc_loopback -d mlx5_0 -p 1 -g 0
+```
+
 ## 2.9.1 Atomic 操作的使用场景
 
 Atomic 操作用于远端状态的同步和协调。它不是普通 RDMA READ/WRITE 的替代品，而是在需要原子更新远端 64 位值时使用的特殊操作。
@@ -43,7 +50,7 @@ if (current_value == 0) {
 
 问题：READ 和 WRITE 之间，另一个节点可能已经修改了锁。这是经典的**竞态条件**。
 
-**解决方案：Atomic 操作**
+**一种常见做法：Atomic 操作**
 
 ```c
 // 发起方 A
@@ -465,19 +472,11 @@ if (n > 0 && wc.status != IBV_WC_SUCCESS) {
 }
 ```
 
-## 2.9.6 关键要点回顾
+## 2.9.6 本章小结
 
-| 概念 | 要点 |
-|------|------|
-| **单边操作** | 在远端内存上执行原子操作，远端 CPU 不参与 |
-| **两种操作** | CAS（比较交换）和 FA（取数加） |
-| **只支持 64 位** | 只能操作 64 位值，地址必须 8 字节对齐 |
-| **CAS 原理** | 比较并交换，返回原始值，用于条件更新 |
-| **FA 原理** | 取数加，返回原始值，用于计数和序列 |
-| **权限要求** | 远端 MR 必须有 REMOTE_ATOMIC；设置 REMOTE_ATOMIC 时还必须设置 LOCAL_WRITE |
-| **并发限制** | 受 `max_rd_atomic` 和 `max_dest_rd_atomic` 限制 |
-| **返回值** | 原始值写入发起方 `sg_list` 指向的本地缓冲区 |
-| **应用场景** | 分布式锁、无锁队列、引用计数、ID 生成 |
+Atomic 操作也是单边操作，但它访问的是远端的 64 位原子变量。CAS 用于“值仍等于期望值时才更新”的场景，Fetch & Add 用于计数和序号分配一类场景。二者都会把远端原始值写回发起方 `sg_list` 指向的本地缓冲区。
+
+远端 MR 必须带有 `IBV_ACCESS_REMOTE_ATOMIC` 权限，目标地址也必须满足 8 字节对齐要求。Atomic 的执行受 `max_rd_atomic` 和 `max_dest_rd_atomic` 等资源限制影响，因此它适合小规模同步变量，不适合替代普通数据搬运。
 
 !!! note "编程模型章节小结"
-    第二篇到这里完成了 RDMA 编程模型的主线：先建立 Context、PD、MR、QP、CQ 这些资源对象，再说明 SEND/RECV、RDMA WRITE、RDMA READ 和 Atomic 这些基本操作。后续篇章会在这个基础上转入更具体的实现机制、性能取舍和系统案例。
+    到这里，第二篇已经说明了 RDMA 的核心资源对象和基本操作。下一章补上一块容易被忽略的内容：错误完成与异步事件。它们不改变数据操作的基本语义，却决定了程序如何感知请求失败、资源异常和端口状态变化。

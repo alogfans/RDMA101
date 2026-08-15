@@ -1,14 +1,22 @@
 # 2.1 RDMA WRITE 范例解读
 
-第一篇我们完成了一个单边 RDMA WRITE 程序。这个程序的表面行为很简单：client 把字符串写入 server 的内存，server 随后打印这段字符串。
+第一篇已经完成了一个单边 RDMA WRITE 程序。从外部看，这个范例的行为很直接：client 把字符串写入 server 的内存，server 随后打印这段字符串。
 
 但这段数据并不是通过 TCP `send` 发送给 server，也不是由 server 调用 `recv` 接收得到的。数据搬运动作由 RDMA 数据路径完成，server 的 CPU 不参与这段数据的接收。
 
-本章以 `examples/one_sided_write/one_sided_write.c` 为线索，说明一个最小 RDMA 程序如何组织。我们重点建立整体印象，而非深入每个 API 的细节——后者会在后续章节展开。
+本章以 `examples/one_sided_write/one_sided_write.c` 为线索，说明一个最小 RDMA 程序如何组织。本章只建立整体印象；各个 Verbs API 的参数和资源关系会在后续章节展开。
+
+本章实验使用 `examples/one_sided_write/one_sided_write.c`。实验需要两个进程：server 端准备一块可被远端写入的 MR，client 端在交换远端地址和 `rkey` 后投递 RDMA WRITE。运行时先启动 server，再在另一端或另一个终端启动 client：
+
+```bash
+make -C examples/one_sided_write
+./examples/one_sided_write/one_sided_write --server -d mlx5_0 -i 1 -g 0
+./examples/one_sided_write/one_sided_write --client <server-ip> -d mlx5_0 -i 1 -g 0
+```
 
 ## 2.1.1 先看程序做了什么
 
-先忽略实现细节，从外部观察这个程序的行为：
+先从外部行为开始观察：
 
 **Client 端：**
 ```
@@ -344,15 +352,11 @@ printf("server: buffer after RDMA WRITE: \"%s\"\n", state.buffer);
 
 ## 2.1.10 编程模型回顾
 
-本章程序的核心模式如下：
+本章的范例给出了 RDMA 程序的基本骨架。TCP 控制通道用于交换 QP number、PSN、LID/GID、远端地址和 `rkey` 等元数据；RDMA 数据路径负责真正的数据搬运。两者的职责不同，但在一个完整程序中必须配合使用。
 
-| 概念 | 关键点 |
-|------|--------|
-| **控制面与数据面分离** | TCP 用于交换元数据，RDMA 用于搬运数据 |
-| **资源先建，请求后投** | 先创建可被网卡使用的资源，再把请求投递到队列 |
-| **异步语义** | `ibv_post_send` 成功只表示请求被接受，完成需检查 WC |
-| **one-sided 操作** | 远端 CPU 不参与数据搬运，但应用级同步需协议设计 |
-| **rkey 是权限凭证** | 远端地址本身不是权限，`rkey` 才是访问凭证 |
+资源创建先于请求投递。程序需要先打开设备、创建 PD、CQ、QP，注册 MR，并把 RC QP 连接到可通信状态，然后才能投递 RDMA WRITE。`ibv_post_send` 成功只表示 WR 已进入发送队列；这次写入是否成功完成，还要由 CQ 中的 WC 来确认。
+
+这个范例还说明了 one-sided 操作的边界。远端 CPU 不参与数据搬运，但应用级同步仍由协议承担；远端地址也不等同于访问权限，只有同时持有正确的 `addr` 和 `rkey`，发起方才能访问对端授权的内存。
 
 !!! note "本章建立的是整体框架"
     本章建立的四个阶段框架（控制通道 → 资源创建 → 连接 QP → 投递请求）是所有 RDMA 程序的基础。后续章节会继续讨论 QP 状态机、错误处理和重试、资源生命周期、性能优化、其他 RDMA 操作，以及缓存一致性和内存序。
