@@ -129,7 +129,7 @@ Atomic 操作适用于需要远程同步和协调的场景：
 
     Masked Compare-and-Swap 是带掩码的 CAS，只比较和修改 64 位值中的某些位；Masked Fetch-and-Add 是带掩码的 FA，只对 64 位值中的某些位进行加法。
 
-    这些通常属于厂商扩展接口，不属于可移植的基础 Verbs 编程模型。如果论文或系统使用这些操作，如果论文中使用这些操作，可能需要：
+    这些通常属于厂商扩展接口，不属于可移植的基础 Verbs 编程模型。如果论文或系统使用了这些操作，可能需要：
 
     1. 使用厂商提供的特定 verbs 扩展（如 `ibv_exp_*` 函数）
     2. 使用特定版本的网卡和驱动
@@ -480,3 +480,9 @@ Atomic 操作也是单边操作，但它访问的是远端的 64 位原子变量
 
 !!! note "编程模型章节小结"
     到这里，第二篇已经说明了 RDMA 的核心资源对象和基本操作。下一章补上一块容易被忽略的内容：错误完成与异步事件。它们不改变数据操作的基本语义，却决定了程序如何感知请求失败、资源异常和端口状态变化。
+
+## 延伸阅读
+
+- [rdma-core 手册页：ibv_post_send(3)](https://man.archlinux.org/man/extra/rdma-core/)：`IBV_WR_ATOMIC_CMP_AND_SWP` 与 `IBV_WR_ATOMIC_FETCH_ADD` 的 WR 字段（`wr.atomic.compare_add`、`wr.atomic.swap`）。
+- [InfiniBand Architecture Specification Volume 1](https://www.infinibandta.org/)：Atomic 操作的 64 位粒度、对齐要求与 `max_rd_atomic`/`max_dest_rd_atomic` 资源约束。
+- 关于基于 RDMA Atomic 的分布式锁与同步协议，可查阅 FaRM、HERD 等系统论文；它们的取舍说明 Atomic 操作的能力边界与扩展原子操作（masked CAS/FA）的使用场景。

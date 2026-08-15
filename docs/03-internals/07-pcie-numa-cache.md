@@ -54,3 +54,10 @@ numactl -H
 PCIe、NUMA 和缓存可见性构成 RDMA 的主机侧基础。Verbs API 隐藏了这些细节，但无法消除它们的代价。正确性主要依赖 MR 生命周期、设备 DMA 语义和 completion 边界；性能则取决于队列所在内存、线程所在 CPU、RNIC 所在 NUMA 节点和 PCIe 链路能力。
 
 IOMMU 与地址转换成本属于 MR 机制，见 3.3；GPU-NIC 拓扑和显存可见性属于 GPUDirect RDMA 路径，见 3.8。
+
+## 延伸阅读
+
+- [PCI Express Base Specification](https://pcisig.com/)：链路代际、lane 与事务类型（MMIO、DMA）的定义。
+- Linux 内核文档 [NUMA 与 CPU 亲和性](https://docs.kernel.org/admin-guide/numa_hw.html)：`numactl` 与 NUMA 拓扑解释。
+- [NVIDIA/Mellanox 性能调优手册](https://docs.nvidia.com/networking/)：PCIe 带宽、NUMA 局部性与网卡队列的调优建议。
+- 关于 DMA 与 CPU 缓存一致性（DDIO 等），可参考 CPU 厂商（Intel/AMD）的架构文档与网卡厂商白皮书。

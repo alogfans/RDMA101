@@ -6,6 +6,19 @@
 
 读完本篇后，读者应能把一个 RDMA 程序中的 API 调用，同用户态 provider、内核驱动、设备队列、DMA、网络路径和完成记录联系起来。
 
+## 学习目标
+
+完成本篇后，读者应当能够：
+
+- 沿一条 RDMA WRITE 的投递路径，说明 WR、WQE、doorbell、DMA、CQE 与 WC 的转换关系；
+- 区分用户态快速路径与内核控制路径，解释 `ibv_post_send` 快、`ibv_reg_mr` 慢的原因；
+- 说明内存注册在页固定、DMA 映射、IOMMU 与 MKey 层面的含义，以及 ODP 的取舍；
+- 描述 RC 可靠传输中 PSN、ACK/NAK、RNR、timeout 与 path MTU 的作用；
+- 识别 RoCE 场景下 GID、MTU、PFC、ECN、DCQCN 与路由对程序行为的影响；
+- 判断 PCIe、NUMA 与 GPUDirect RDMA 场景下正确性与性能的关键边界。
+
+本篇的机制讨论以 mlx5 路径为具体实例，但概念框架（队列、key、可靠传输、网络与拓扑边界）适用于所有 RNIC。读者应把“厂商实现细节”与“跨设备编程模型”分开对待。
+
 ## 执行路径
 
 - [3.1 WRITE 路径](01-operation-path.md)

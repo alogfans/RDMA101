@@ -111,9 +111,9 @@ if (num_devices == 0) {
 
 | 设备名 | 含义 |
 |--------|------|
-| `mlx5_0`、`mlx5_1` | Mellanox ConnectX 系列（最常见） |
+| `mlx5_0`、`mlx5_1` | NVIDIA/Mellanox ConnectX 与 BlueField 系列（最常见） |
 | `rxe0` | Soft-RoCE/RXE 软件模拟设备（用于开发测试） |
-| `irdma0` | Intel X722 系列 |
+| `irdma0` | Intel 以太网 RDMA 设备（如 X722、E810 等） |
 | `siw0` | Soft-iWARP 软件模拟设备 |
 
 可以打印所有设备名：
@@ -392,3 +392,9 @@ PD 则是同一 Context 下的资源访问域。QP、MR、AH 等对象只有处�
 
 !!! note "后续章节"
     有了 Context 和 PD，程序就可以继续创建 CQ、MR 和 QP。接下来的几章会分别讨论完成队列、内存注册以及请求队列。
+
+## 延伸阅读
+
+- [rdma-core 手册页：ibv_open_device(3)、ibv_alloc_pd(3)、ibv_query_device(3)、ibv_query_port(3)](https://man.archlinux.org/man/extra/rdma-core/)：本章涉及的函数原型、返回值和错误语义。
+- Linux 内核文档 [RDMA Core 与 uverbs](https://docs.kernel.org/infiniband/)：说明 `ibv_get_device_list`、`ibv_open_device` 在内核侧对应的设备枚举与打开流程。
+- 本章实验程序为 `examples/programming_model/01_device_info.c`，其输出字段（`phys_port_cnt`、`max_qp`、`max_cqe`、端口状态、GID）可直接与 `ibv_devinfo` 对照。

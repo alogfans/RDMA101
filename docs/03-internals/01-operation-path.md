@@ -161,3 +161,10 @@ RDMA WRITE 的成功 completion 有严格边界。它表示发起方这条 WR �
 第八，发起方网卡在发送 CQ 中写入 CQE。应用通过 `ibv_poll_cq` 得到 WC，判断这条 WR 的完成状态。
 
 这条路径揭示了 RDMA 编程中最重要的分界：`ibv_post_send` 完成的是投递，doorbell 之后才进入设备执行，`ibv_poll_cq` 取得的是传输完成结果，远端应用是否消费数据则由更高层协议决定。
+
+## 延伸阅读
+
+- [rdma-core 源码 `providers/mlx5/qp.c`](https://github.com/linux-rdma/rdma-core/blob/master/providers/mlx5/qp.c)：`mlx5_post_send` 的实现，本章引用的 `set_raddr_seg`、`set_data_ptr_seg` 与队列生产者索引都在其中。
+- [rdma-core 源码 `providers/mlx5/cq.c`](https://github.com/linux-rdma/rdma-core/blob/master/providers/mlx5/cq.c)：CQE 轮询与 `ibv_wc` 转换的实现。
+- [InfiniBand Architecture Specification Volume 1](https://www.infinibandta.org/)：RC 传输协议中 WQE 执行、PSN 与确认的规范描述。
+- 注意：本章涉及 mlx5 队列格式的细节属于厂商实现，只用于解释行为；应用代码不应依赖这些内部结构。

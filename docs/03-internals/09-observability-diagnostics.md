@@ -93,3 +93,10 @@ GPU-RDMA 场景还要确认 direct path 是否真的可用。GPU memory 注册�
 诊断 RDMA 程序要从 completion 和对象状态出发，逐层回到设备、内存、网络和拓扑。WC status 告诉程序哪类 WR 失败，异步事件告诉对象或端口发生了什么变化，计数器和系统日志说明设备与网络是否出现拥塞、丢包或硬件错误，PCIe/NUMA/GPU 拓扑解释功能正确但性能不佳的情况。
 
 第三篇建立的机制模型最终服务于这一点：把看似孤立的错误码、队列状态、网络计数器和拓扑信息放在同一条 RDMA 数据路径中理解。只有知道请求从哪里进入设备、在哪里访问内存、在哪里穿过网络、在哪里完成写回，才能把问题定位到真正的层次。
+
+## 延伸阅读
+
+- [rdma-core 工具](https://github.com/linux-rdma/rdma-core)：`ibv_devinfo`、`rdma link`、`ibv_*` 系列命令的用法。
+- [NVIDIA 网卡诊断工具与文档](https://docs.nvidia.com/networking/)：`mft`、`mlxlink`、`mlxconfig` 等厂商工具的用法（用于固件、链路与计数器诊断）。
+- Linux 内核文档与 [ethtool 手册](https://man7.org/linux/man-pages/man8/ethtool.8.html)：网卡计数器（pause、ECN、drop、CRC）的解释。
+- 关于拥塞与性能诊断，可参考 DCQCN 论文（SIGCOMM 2015）与各厂商的 RoCE 运维指南。

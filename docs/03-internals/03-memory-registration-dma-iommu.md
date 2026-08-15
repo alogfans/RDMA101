@@ -116,3 +116,10 @@ MR 的生命周期还影响资源释放顺序。常规 host memory 路径中，�
 `ibv_reg_mr` 的本质是为设备建立一个可 DMA 访问、可权限校验、可在 MR 生命周期内保持稳定的内存对象。`lkey` 用于本端设备访问本地 MR，`rkey` 用于远端设备访问该 MR；二者背后都指向设备侧 memory key 状态。
 
 页固定、DMA 映射、IOMMU 转换和 MKey 创建共同构成注册成本。传统 MR 把成本放在注册阶段，ODP 把部分成本推迟到首次访问阶段。理解这些机制以后，注册慢、频繁注册性能差、`rkey` 越界访问报错、注销顺序错误导致异常等现象，都可以放回同一个模型中解释。
+
+## 延伸阅读
+
+- Linux 内核文档 [DMA API](https://docs.kernel.org/core-api/dma-api.html) 与 [DMA attributes](https://docs.kernel.org/core-api/dma-attributes.html)：DMA mapping 的语义与约束。
+- Linux 内核源码 `drivers/infiniband/core/umem.c`（`ib_umem_get`）与 `drivers/infiniband/hw/mlx5/mr.c`：页固定与 mlx5 MKey 创建的实现。
+- [rdma-core 手册页：ibv_reg_mr(3)](https://man.archlinux.org/man/extra/rdma-core/)：访问标志的合法组合。
+- 关于 ODP 的能力与限制，见 Linux 内核文档 [On-Demand Paging](https://docs.kernel.org/infiniband/opd.html) 及所用网卡驱动手册。

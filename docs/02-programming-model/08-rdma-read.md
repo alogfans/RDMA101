@@ -433,3 +433,9 @@ READ 的成功 WC 表示数据已经写入本地缓冲区，可以由应用读�
 
 !!! note "后续章节"
     RDMA READ 适合"按需拉取"的场景，但延迟比 RDMA WRITE 高。下一章会介绍远端 Atomic 操作。
+
+## 延伸阅读
+
+- [rdma-core 手册页：ibv_post_send(3)](https://man.archlinux.org/man/extra/rdma-core/)：RDMA READ 的 WR 字段与 SGE 语义（SGE 描述本地接收缓冲区）。
+- [InfiniBand Architecture Specification Volume 1](https://www.infinibandta.org/)：`max_rd_atomic` 与 `max_dest_rd_atomic` 的规范定义，以及 READ/Atomic 的 responder 资源约束。
+- 本章实验程序为 `examples/programming_model/03_rc_loopback.c` 的第三段（RDMA READ），其 `byte_len` 输出可直接对照本章完成语义。

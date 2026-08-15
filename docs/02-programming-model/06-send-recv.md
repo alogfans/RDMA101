@@ -21,6 +21,26 @@ RDMA 已经提供 READ、WRITE 和 Atomic 等单边操作，但许多通信仍�
 
 双边操作（SEND/RECV）要求发送方和接收方都参与，接收方必须提前投递 RECV WR，因此双方都能通过 completion 感知操作发生。单边操作（RDMA READ/WRITE）则只有发起方投递 WR，远端 CPU 不参与数据搬运，也不会因为基本 READ/WRITE 自动得到完成事件。
 
+从数据方向上看，两类操作的区别一目了然：
+
+```mermaid
+flowchart TB
+    subgraph TWO["双边操作：SEND / RECV"]
+        direction LR
+        T1["发送方<br/>投递 SEND WR"] -->|"数据"| T2["接收方<br/>提前投递 RECV WR"]
+        T2 -->|"RECV WC<br/>通知应用"| T2
+        T1 -->|"SEND WC"| T1
+    end
+    subgraph ONE["单边操作：RDMA WRITE / READ"]
+        direction LR
+        O1["发起方<br/>投递 WR"] -->|"数据直接写入/读出"| O2["远端已授权 MR<br/>（CPU 不参与）"]
+        O1 -->|"WC 只在发起方"| O1
+    end
+```
+
+图 2-9b：双边与单边操作的数据方向。双边操作双方都投递 WR 并各自收到 WC；单边操作只有发起方投递 WR，远端 CPU 不参与，也不会自动收到完成事件。
+{: .figure-caption }
+
 ### SEND/RECV 的执行过程
 
 ```mermaid
@@ -399,7 +419,7 @@ int recv_completion_handler(struct ibv_wc *wc) {
 // 在修改 QP 到 RTR 状态时设置
 struct ibv_qp_attr attr = {
     .qp_state = IBV_QPS_RTR,
-    .min_rnr_timer = 12,  // RNR NAK 定时器（约 0.34ms）
+    .min_rnr_timer = 12,  // RNR NAK 定时器编码值，遵循 IBTA Table 45；12 对应约 0.64ms
     // ...
 };
 
@@ -552,3 +572,9 @@ SEND WC 和 RECV WC 的含义不同。发送方看到 SEND WC，表示本地发�
 
 !!! note "后续章节"
     SEND/RECV 是 RDMA 双边通信的基础，适合控制消息传递和需要接收方获得完成事件的场景。后续章节将转向单边写入、单边读取和远端原子操作。
+
+## 延伸阅读
+
+- [rdma-core 手册页：ibv_post_send(3)、ibv_post_recv(3)](https://man.archlinux.org/man/extra/rdma-core/)：SEND/RECV 相关的 WR 字段与返回语义。
+- [InfiniBand Architecture Specification Volume 1](https://www.infinibandta.org/)：RNR NAK 的触发条件、`min_rnr_timer`（Table 45）与 `rnr_retry` 的行为。
+- 关于 Immediate 数据的字节序约定，可查阅 rdma-core 头文件与 [内核 RDMA 文档](https://docs.kernel.org/infiniband/)；`imm_data` 在协议中以网络字节序传输，应用应使用 `htonl`/`ntohl` 转换。

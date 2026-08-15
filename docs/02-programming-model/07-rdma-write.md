@@ -83,13 +83,14 @@ RDMA WRITE 适用于需要高效数据搬运的场景：
 RDMA WRITE WR 的结构需要指定远端地址和 `rkey`：
 
 ```c
-// 本地数据准备
-memcpy(send_buffer, "Hello, RDMA WRITE!", 19);
+// 本地数据准备（sizeof 包含结尾的 '\0'，共 19 字节）
+char msg[] = "Hello, RDMA WRITE!";
+memcpy(send_buffer, msg, sizeof(msg));
 
 // 构造 SGE：描述本地数据
 struct ibv_sge sge = {
     .addr = (uintptr_t)send_buffer,
-    .length = 19,
+    .length = sizeof(msg),
     .lkey = send_mr->lkey
 };
 
@@ -484,3 +485,9 @@ RDMA WRITE 由发起方主动把本地数据写入远端已经授权的内存。
 
 !!! note "后续章节"
     RDMA WRITE 是最常用的单边操作，适合高效的数据推送。下一章将讨论 RDMA READ，即由发起方主动从远端拉取数据。
+
+## 延伸阅读
+
+- [rdma-core 手册页：ibv_post_send(3)](https://man.archlinux.org/man/extra/rdma-core/)：RDMA WRITE 相关 WR 字段（`wr.rdma.remote_addr`、`wr.rdma.rkey`）与 `IBV_SEND_INLINE` 的语义。
+- [InfiniBand Architecture Specification Volume 1](https://www.infinibandta.org/)：RDMA WRITE 的完成语义与远端内存可见性边界。
+- 关于 DMA 与 CPU 缓存一致性（DDIO、relaxed ordering 等）的讨论，可参考处理器厂商与网卡厂商的架构文档；应用层同步协议的设计仍以本章给出的原则为准。

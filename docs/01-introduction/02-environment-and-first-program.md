@@ -172,7 +172,7 @@ sequenceDiagram
     Server->>Server: 打印 buffer
 ```
 
-图 1-3：单边 RDMA WRITE 中控制信息交换与远端内存写入。
+图 1-4：单边 RDMA WRITE 中控制信息交换与远端内存写入。
 {: .figure-caption }
 
 **关键步骤：**
@@ -248,3 +248,10 @@ server: buffer after RDMA WRITE: "hello one-sided rdma"
 - 运行一个最小的 one-sided RDMA 程序
 
 下一篇将继续说明这些对象和协议是怎么被组织起来的。
+
+## 延伸阅读
+
+- [perftest](https://github.com/linux-rdma/perftest)：`ib_write_bw`、`ib_send_bw`、`ib_read_lat` 等测试工具的官方仓库，其 README 说明了各参数含义。
+- [Soft-RoCE（RXE）内核文档](https://docs.kernel.org/infiniband/soft-roce.html)：说明 RXE 的加载、配置与限制。
+- [rdma-core](https://github.com/linux-rdma/rdma-core)：`ibv_devices`、`ibv_devinfo` 等用户态工具与库的源码所在。
+- 本章所有命令（`modprobe`、`rdma`、`ip`、`ibv_*`、`perftest`）的预期输出与读者系统版本、驱动和固件有关；判定标准以命令成功执行且输出字段符合语义为准，不要照搬示例中的具体数值。

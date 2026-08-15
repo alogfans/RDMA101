@@ -4,6 +4,18 @@
 
 这两个通道容易混在一起。Work Completion error 是某个 WR 的执行结果，它通过 CQ 返回；asynchronous event 则是资源、端口或设备状态变化，它通过设备 Context 的异步事件队列返回。前者回答“这个请求为什么没有成功”，后者回答“这个资源或设备发生了什么变化”。
 
+加上投递函数的返回值，RDMA 程序实际上面对三个不同层面的错误信息：
+
+```mermaid
+flowchart TB
+    P["应用"] -->|"ibv_post_send / ibv_post_recv"| D["投递结果<br/>（同步返回值）<br/>失败：WR 未被接受"]
+    P -->|"ibv_poll_cq"| W["Work Completion<br/>（异步完成记录）<br/>status ≠ SUCCESS：该 WR 执行失败"]
+    P -->|"ibv_get_async_event"| E["Async Event<br/>（异步事件）<br/>资源、端口或设备状态变化"]
+```
+
+图 2-16：RDMA 程序面对的三类错误信息。投递返回值、WC status 与异步事件处在不同层面，不能都按 `errno` 一类错误处理。
+{: .figure-caption }
+
 本章实验仍以 `examples/programming_model/03_rc_loopback.c` 为参照。正常运行时，程序会打印每个成功操作对应的 WC；错误完成则应在同一条 CQ 轮询路径中处理，只是 `wc.status` 不再是 `IBV_WC_SUCCESS`。异步事件需要端口、QP、CQ 或设备状态发生真实变化，基础实验不主动制造这类故障，本章只说明它在程序结构中的位置。
 
 ```bash
@@ -91,3 +103,9 @@ RDMA 程序需要区分三类结果。投递函数返回失败，表示 WR 没�
 
 !!! note "第二篇小结"
     第二篇到这里完成了 RDMA 编程模型的主线：资源如何创建和关联，请求如何投递和完成，基本操作如何表达数据方向，以及错误和事件如何回到应用。后续篇章会在这个基础上转入更具体的实现机制、性能取舍和系统案例。
+
+## 延伸阅读
+
+- [rdma-core 手册页：ibv_get_async_event(3)、ibv_ack_async_event(3)、ibv_poll_cq(3)](https://man.archlinux.org/man/extra/rdma-core/)：异步事件与完成轮询的函数语义。
+- [rdma-core 头文件 `libibverbs/verbs.h`](https://github.com/linux-rdma/rdma-core/blob/master/libibverbs/verbs.h)：`enum ibv_event_type`、`enum ibv_wc_status` 的完整定义。
+- [InfiniBand Architecture Specification Volume 1](https://www.infinibandta.org/)：CQ 溢出、QP 错误状态与异步事件的规范行为。

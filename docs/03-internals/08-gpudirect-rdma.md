@@ -105,3 +105,10 @@ GPU memory 注册失败通常指向能力或权限边界：peer-memory 模块缺
 GPUDirect RDMA 的目标是让 RNIC 直接访问 GPU 显存，减少 host staging 拷贝。它在 Verbs API 上仍表现为 MR、SGE、WR 和 CQE，但内部涉及 GPU 驱动、peer-memory 或 dma-buf、MKey、PCIe/IOMMU 拓扑和 CUDA 同步。
 
 正确使用 GPUDirect RDMA 的核心是三点：GPU memory 注册后才可作为 RDMA buffer；GPU allocation、MR 和远端 `rkey` 必须有清晰生命周期；RDMA completion 与 GPU 可见性不是同一个边界。性能分析则必须把 GPU-NIC 拓扑放在第一层，而不是只看程序是否成功完成。
+
+## 延伸阅读
+
+- [NVIDIA GPUDirect 技术文档](https://developer.nvidia.com/gpudirect)：GPUDirect RDMA 的能力、驱动模块（`nvidia-peermem`）与平台要求。
+- [NVIDIA 多 GPU 通信库（NCCL）文档](https://docs.nvidia.com/deeplearning/nccl/)：GPU 与 NIC 拓扑感知的实践。
+- [CUDA 编程指南](https://docs.nvidia.com/cuda/)：CUDA stream、事件与内存同步的语义。
+- Linux 内核源码 `drivers/gpu/drm/nouveau/`（NVKM 的 peer 支持）与 rdma-core 的相关文档，说明 dma-buf 与 peer-memory 路径。

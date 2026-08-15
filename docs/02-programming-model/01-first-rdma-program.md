@@ -91,7 +91,7 @@ flowchart TB
 |------|------|------|
 | **建立控制通道** | TCP 连接 | RDMA 需要交换 QP 编号、地址、key 等元数据 |
 | **创建本端资源** | 初始化 RDMA 对象 | 网卡需要知道用什么资源来服务请求 |
-| **交换信息并连接 QP** | 交换 `peer_info`、建立 RDMA 路由 | 两端 QP 需要知道对端 QP 编号、PSN 和路径信息 |
+| **交换信息并连接 QP** | 交换 `peer_info`、把双方 QP 连接到 RTS | 两端 QP 需要知道对端 QP 编号、PSN 和路径信息 |
 | **发起数据搬运** | 投递 RDMA WRITE | 数据传输发生在这里 |
 
 !!! note "这是所有 RDMA 程序的共同模式"
@@ -360,3 +360,9 @@ printf("server: buffer after RDMA WRITE: \"%s\"\n", state.buffer);
 
 !!! note "本章建立的是整体框架"
     本章建立的四个阶段框架（控制通道 → 资源创建 → 连接 QP → 投递请求）是所有 RDMA 程序的基础。后续章节会继续讨论 QP 状态机、错误处理和重试、资源生命周期、性能优化、其他 RDMA 操作，以及缓存一致性和内存序。
+
+## 延伸阅读
+
+- [rdma-core 的 libibverbs 手册页](https://man.archlinux.org/man/extra/rdma-core/)：`ibv_post_send`、`ibv_post_recv`、`ibv_poll_cq`、`ibv_reg_mr`、`ibv_modify_qp` 等函数的行为与返回值定义。
+- [Linux 内核 RDMA API 文档](https://docs.kernel.org/infiniband/core_lib.html)：说明内核侧 RDMA 对象与用户态 Verbs 的对应关系。
+- 本章样例源码位于仓库 `examples/one_sided_write/one_sided_write.c`，读者可对照阅读完整实现，包括错误处理与控制通道细节。

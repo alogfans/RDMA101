@@ -76,3 +76,10 @@ RC 也不能替代幂等性设计。如果应用在上层自行重试某个操�
 RC 依靠 PSN、ACK/NAK、重传、RNR、timeout 和 MTU 管理可靠传输。成功 completion 表示传输层完成，失败 completion 或异步事件表示设备无法继续满足该 WR 或 QP 的可靠性要求。
 
 RC 的价值在于把丢包、乱序和有限重传隐藏在设备传输层内；它的边界在于不表达远端应用已经消费数据，也不提供应用级事务。理解这个边界，是设计 RDMA 控制协议、错误恢复和性能参数的前提。
+
+## 延伸阅读
+
+- [InfiniBand Architecture Specification Volume 1](https://www.infinibandta.org/)：PSN、ACK/NAK、RNR、path MTU 与 `timeout`（12.7.34 节，编码为 `4.096µs × 2^timeout`）的规范定义。
+- [Linux 内核 rxe 驱动源码](https://github.com/torvalds/linux/tree/master/drivers/infiniband/sw/rxe)：软件实现的 RC 可靠传输，便于对照协议行为。
+- 关于 `min_rnr_timer` 的编码，见 IBTA Table 45（"Encoding for RNR NAK Timer Field"）；内核中的对应枚举为 `enum ib_rnr_timeout`。
+- [RDMA 超时参数调优](https://support.hpe.com/)类运维文档可作为 `timeout`、`retry_cnt`、`rnr_retry` 选值的参考，但具体数值应以实测为准。

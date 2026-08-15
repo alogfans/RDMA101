@@ -80,3 +80,10 @@ UAR 映射解释了用户态快速路径为何能够成立，也解释了它的�
 RDMA 的“绕过内核”是一个受限命题。WR 投递、CQ 轮询和数据搬运构成用户态快速路径，避免了传统内核网络协议栈和内核缓冲区拷贝；资源创建、内存注册、队列映射、权限控制、状态转换和事件上报仍属于控制路径，需要内核参与。
 
 `libibverbs` 给出统一 API，provider 把 API 转换为设备格式，mlx5_ib 管理 RDMA 对象，mlx5_core 管理更底层的 mlx5 设备。理解这个分工以后，许多现象就有了明确位置：`ibv_post_send` 快，是因为它使用已映射的队列和 UAR；`ibv_reg_mr` 慢，是因为它必须建立设备可验证的内存对象；错误 completion 能返回到用户态，是因为设备执行结果最终写入 CQE，再由 provider 转换为 WC。
+
+## 延伸阅读
+
+- [rdma-core 源码结构](https://github.com/linux-rdma/rdma-core)：`libibverbs/`（公共库）、`providers/mlx5/`（mlx5 用户态 provider）、`kernel-headers/`（uverbs ABI 定义）。
+- Linux 内核源码 `drivers/infiniband/core/uverbs_*.c` 与 `drivers/infiniband/hw/mlx5/`：uverbs 处理与 `mlx5_ib` 驱动实现。
+- [Linux 内核文档：RDMA subsystem](https://docs.kernel.org/infiniband/)：用户态与内核态 RDMA 接口的总体说明。
+- [RDMA Aware Programming 指南](https://github.com/linux-rdma/rdma-core/tree/master/Documentation)（rdma-core 文档）：介绍 Verbs 编程模型与常见错误。

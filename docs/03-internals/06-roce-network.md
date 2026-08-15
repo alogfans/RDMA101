@@ -26,11 +26,14 @@ Linux 上的 RoCE GID 表不是由应用直接写入的配置表。它由 RDMA �
 
 ```text
 DEV     PORT  INDEX  GID                                      IPv4          VER  DEV
-mlx5_0  1     0      fe80:0000:0000:0000:0000:00ff:fe00:0011                v1   rdma0
-mlx5_0  1     1      fe80:0000:0000:0000:0000:00ff:fe00:0011                v2   rdma0
-mlx5_0  1     2      0000:0000:0000:0000:0000:ffff:c000:020b  192.0.2.11   v1   rdma0
-mlx5_0  1     3      0000:0000:0000:0000:0000:ffff:c000:020b  192.0.2.11   v2   rdma0
+mlx5_0  1     0      fe80:0000:0000:0000:0000:00ff:fe00:0011                v1   ens3f0
+mlx5_0  1     1      fe80:0000:0000:0000:0000:00ff:fe00:0011                v2   ens3f0
+mlx5_0  1     2      0000:0000:0000:0000:0000:ffff:c000:020b  192.0.2.11   v1   ens3f0
+mlx5_0  1     3      0000:0000:0000:0000:0000:ffff:c000:020b  192.0.2.11   v2   ens3f0
 ```
+
+!!! note "示例中的 netdev 名"
+    上表最后一行 `DEV` 是 GID 关联的 Ethernet netdev 名，示例统一写作 `ens3f0`；实际系统的 netdev 名取决于设备与系统命名规则，应以 `rdma link show` 输出为准。
 
 GID index 是 GID 表中的条目编号。QP 建立连接时需要指定本端 GID index，并取得远端 GID。这个编号不能只按经验填写，因为它决定了 RDMA packet 使用哪个源地址、哪个 netdev、哪种 RoCE 类型以及可能的 VLAN 关系。现代 RoCE v2 网络中，程序通常应选择与目标 IP 同一网络、与实际出接口一致、类型为 RoCE v2 的 GID 条目。若本端使用的 GID 条目与远端地址族、VLAN、路由或网卡端口不匹配，QP 即使状态转换成功，后续传输也可能超时。
 
@@ -49,12 +52,14 @@ RoCE 程序中的“交换地址信息”因此不只是交换 QP number 和 rke
 
 ```bash
 rdma link show
-ip link set rdma0 up
-ip addr add 192.0.2.11/24 dev rdma0
+ip link show
+# 假设 RDMA 端口对应的 netdev 为 ens3f0（以 rdma link show 输出的 netdev 字段为准）
+ip link set ens3f0 up
+ip addr add 192.0.2.11/24 dev ens3f0
 ip route get 192.0.2.12
 ```
 
-`rdma link show` 用于确认 `mlx5_0/1` 这类 RDMA 端口对应哪个 netdev。`ip addr add` 建立 IP 地址后，mlx5 驱动会更新该端口的 GID 表。`ip route get <remote-ip>` 用于确认访问远端 IP 时实际选择的出口和源地址；这个出口应当与程序准备使用的 GID index 关联。
+`rdma link show` 用于确认 `mlx5_0/1` 这类 RDMA 端口对应哪个 netdev（输出中的 `netdev` 字段）。注意 `rdma link` 名（如 `rdma0`）只是 RDMA 子系统的链路名称，不是 `ip` 命令操作的对象；`ip link set`、`ip addr add` 操作的是 Ethernet netdev（如 `ens3f0`、`enp175s0f0` 等）。`ip addr add` 建立 IP 地址后，mlx5 驱动会更新该端口的 GID 表。`ip route get <remote-ip>` 用于确认访问远端 IP 时实际选择的出口和源地址；这个出口应当与程序准备使用的 GID index 关联。
 
 完成 IP 配置后，可以用 `show_gids` 直接查看设备、端口、GID index、RoCE 版本和 netdev 的对应关系。没有该工具时，可用 sysfs 读取相同信息。
 
@@ -71,9 +76,9 @@ cat /sys/class/infiniband/mlx5_0/ports/1/gid_attrs/ndevs/3
 VLAN 场景下，应在 VLAN netdev 上配置地址。这样生成的 GID 才带有正确的 VLAN 关系，RDMA packet 才会进入期望的二层网络和 QoS 队列。
 
 ```bash
-ip link add link rdma0 name rdma0.100 type vlan id 100
-ip link set rdma0.100 up
-ip addr add 198.51.100.11/24 dev rdma0.100
+ip link add link ens3f0 name ens3f0.100 type vlan id 100
+ip link set ens3f0.100 up
+ip addr add 198.51.100.11/24 dev ens3f0.100
 ip route get 198.51.100.12
 ```
 
@@ -97,8 +102,8 @@ RDMA WR 可以很大，但网络 packet 必须受 MTU 限制。QP 的 path MTU �
 Linux 主机侧配置的是 Ethernet netdev 的 MTU，交换机端口也必须使用兼容配置。QP 的 path MTU 不能大于端到端 Ethernet 路径实际可承载的 RDMA payload。使用 raw Verbs 时，程序在 RTR 阶段设置 `attr.path_mtu`；使用 RDMA CM 时，路径参数通常由地址解析和路由过程决定，但底层仍受 netdev 与交换机 MTU 约束。
 
 ```bash
-ip link set rdma0 mtu 9000
-ip link show rdma0
+ip link set ens3f0 mtu 9000
+ip link show ens3f0
 ibv_devinfo -v | grep -A 8 'port: 1'
 ```
 
@@ -131,7 +136,7 @@ RoCE 问题很少只靠程序日志定位。端口状态和计数器能够暴露
 ```bash
 rdma link show
 ibv_devinfo -v
-ethtool -S rdma0 | grep -E 'pause|ecn|drop|error'
+ethtool -S ens3f0 | grep -E 'pause|ecn|drop|error'
 cat /sys/class/infiniband/mlx5_0/ports/1/counters/*
 ```
 
@@ -142,3 +147,11 @@ pause 计数持续升高，说明 PFC 正在频繁介入；ECN mark 增多，说
 RoCE 让 RDMA 使用以太网承载，带来了 IP 地址、GID index、MTU、QoS、PFC、ECN、DCQCN、路由和交换机队列等因素。Verbs API 把这些差异隐藏在统一编程模型之后，但无法消除它们对延迟、吞吐和错误完成的影响。
 
 设计 RoCE 程序时，连接参数与网络配置必须一同考虑。诊断 RoCE 问题时，应从 GID、路由和 MTU 开始，再看 PFC/ECN 与端口计数器，最后结合 RC completion 判断传输层如何失败。
+
+## 延伸阅读
+
+- [NVIDIA 官方 RoCE 文档](https://docs.nvidia.com/networking/)：RoCE v1/v2 配置、PFC、ECN 与 DCQCN 的部署指南（需以当前版本为准）。
+- [Linux 内核文档：RoCE](https://docs.kernel.org/infiniband/)：GID 表、RoCE mode 与驱动行为。
+- [rdma-core 工具说明](https://github.com/linux-rdma/rdma-core)：`show_gids`、`cma_roce_mode` 等工具的用法。
+- 关于 DCQCN 的协议细节，可阅读论文 *Congestion Control for Large-Scale RDMA Deployments*（SIGCOMM 2015，DCQCN 的原始出处）。
+- IBTA 规范中 RoCE v1（Annex A16）与 RoCE v2（Annex A17）的封装定义。

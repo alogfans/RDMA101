@@ -134,3 +134,10 @@ Selective signaling 的常见方式是每隔若干条 WR 设置一次 `IBV_SEND_
 QP、WQE、CQE 和 doorbell 把 Verbs API 与设备执行连接起来。QP 提供队列和状态，WQE 是设备读取的请求格式，doorbell record 和 UAR/BF register 发布新工作，CQE 是设备写回的完成记录，provider 把 CQE 转换为应用可见的 WC。
 
 `ibv_post_send` 的返回点位于投递路径，不位于传输完成点。只有设备执行请求并写回 CQE 后，`ibv_poll_cq` 才能取得 completion。WQE 发布顺序、doorbell、CQ 容量和 selective signaling 都直接影响性能与正确性，也是后续可靠传输、RoCE 网络和诊断章节的基础。
+
+## 延伸阅读
+
+- [rdma-core 源码 `providers/mlx5/qp.c` 与 `providers/mlx5/wq.h`](https://github.com/linux-rdma/rdma-core/tree/master/providers/mlx5)：WQE 段结构、`mlx5_wqe_ctrl_seg`、`mlx5_wqe_data_seg` 的定义与填写逻辑。
+- [NVIDIA/Mellanox BlueField 与 ConnectX 编程手册](https://network.nvidia.com/related-docs/prod_software/)：BlueFlame、doorbell record 与 UAR 的硬件语义（需登录厂商站点获取）。
+- [Linux 内核 mlx5 驱动文档与源码](https://docs.kernel.org/networking/devlink/mlx5.html)：`mlx5_ib` 与 `mlx5_core` 的分工。
+- CQE owner bit 与循环队列的通用设计，可参考 InfiniBand 规范中 CQ 的实现要求。
