@@ -1,4 +1,4 @@
-# 3.3 Memory Registration、MKey 与 DMA 地址
+# 3.3 内存注册
 
 普通用户态内存不能直接交给 RDMA 网卡使用。CPU 访问内存时使用虚拟地址，由 MMU 和页表完成地址转换；网卡执行 DMA 时需要设备可见的地址和稳定的访问权限。`ibv_reg_mr` 的作用，就是把一段应用内存转换为设备可以验证、可以寻址、可以 DMA 访问的 memory region。
 

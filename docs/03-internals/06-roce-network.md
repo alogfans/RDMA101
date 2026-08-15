@@ -1,4 +1,4 @@
-# 3.6 RoCE 网络路径
+# 3.6 RoCE 路径
 
 RoCE（RDMA over Converged Ethernet）把 RDMA 传输放到 Ethernet 网络中。Verbs 程序仍然使用 QP、MR、WR 和 CQ，不需要改成 socket API；但数据包离开网卡以后，要经过 Ethernet、IP、交换机队列、MTU、优先级、拥塞控制和路由配置。程序看到的一个 `IBV_WC_RETRY_EXC_ERR`，底层原因可能是 GID 选错、MTU 不一致、PFC 配置不当、交换机丢包或远端 QP 根本不可达。
 

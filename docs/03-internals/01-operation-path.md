@@ -1,4 +1,4 @@
-# 3.1 一次 RDMA WRITE 的完整路径
+# 3.1 WRITE 路径
 
 RDMA WRITE 的程序入口是一条 Send WR。应用在 WR 中写明操作类型，在 SGE 中写明本地数据，在 `wr.rdma` 中写明远端地址和 `rkey`，然后调用 `ibv_post_send`。从 API 的形式看，这只是一次函数调用；从设备的角度看，这次调用向 QP 的 Send Queue 增加了一条设备可执行的工作项。
 

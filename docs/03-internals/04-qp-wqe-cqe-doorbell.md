@@ -1,4 +1,4 @@
-# 3.4 QP、WQE、CQE 与 Doorbell
+# 3.4 队列与门铃
 
 QP 和 CQ 是 Verbs 编程模型中最常见的对象。到设备执行层，它们不再只是 API 句柄，而是一组由用户态、内核和网卡共同维护的队列状态。应用把 WR 投递到 QP；mlx5 provider 把 WR 写成 WQE；doorbell 通知设备读取新 WQE；设备完成后向 CQ 写入 CQE；provider 再把 CQE 转换为应用看到的 WC。
 
