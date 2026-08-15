@@ -1,17 +1,16 @@
 # 2.8 RDMA READ 操作
 
-上一节我们讨论了 RDMA WRITE——发起方把数据写入远端内存。本章讨论相反的操作：RDMA READ——发起方主动从远端内存中读取数据。
+上一节讨论了 RDMA WRITE，即发起方把数据写入远端内存。本章讨论相反方向的操作：RDMA READ。发起方主动从远端已授权内存中读取数据，并写入本地已注册缓冲区。
 
-RDMA READ 适合"按需加载"的场景：发起方决定何时读取，远端 CPU 完全不参与。
+RDMA READ 适合按需加载场景：发起方决定何时读取，远端 CPU 不参与数据搬运，也不会收到完成事件。
 
-!!! note "推荐阅读资源"
-    RDMA 的官方编程手册和 www.rdmamojo.com 网站提供了更完整的 API 参考。本章建立概念框架，具体 API 的细节可以在需要时查阅这些资源。
+与 SEND 或 WRITE with Immediate 不同，RDMA READ 不消耗远端 Receive WR。远端需要做的是提前注册并授权被读取的 MR，同时在 QP 状态中允许一定数量的 outstanding READ/Atomic 请求。
 
-## 2.8.1 先从问题开始：为什么需要 RDMA READ
+## 2.8.1 RDMA READ 的使用场景
 
-在深入代码之前，让我们先理解：**RDMA READ 和 RDMA WRITE 的本质区别是什么？**
+在说明代码前，先比较 RDMA READ 和 RDMA WRITE 的数据方向。
 
-答案是：**数据方向不同**。
+二者都是单边操作，但数据方向不同。
 
 ### WRITE vs READ：数据方向
 
@@ -20,10 +19,10 @@ RDMA READ 适合"按需加载"的场景：发起方决定何时读取，远端 C
 | **RDMA WRITE** | 发起方 → 远端 | 发起方推送 | 数据推送、状态同步 |
 | **RDMA READ** | 远端 → 发起方 | 发起方拉取 | 按需加载、远程缓存 |
 
-!!! note "为什么有了 WRITE 还需要 READ？"
-    有些场景下，发起方不知道何时需要数据，或者远端数据经常变化。使用 READ 可以让发起方按需拉取最新数据，而不是等待远端推送。
+!!! note "READ 与 WRITE 的选择"
+    有些场景下，发起方不知道何时需要数据，或者远端数据经常变化。READ 允许发起方按需拉取数据，而不是等待远端推送。
 
-### RDMA READ 的本质
+### RDMA READ 的执行过程
 
 ```mermaid
 sequenceDiagram
@@ -65,7 +64,7 @@ sequenceDiagram
 
 RDMA READ 适用于发起方需要主动获取数据的场景：
 
-| 场景 | 为什么用 RDMA READ |
+| 场景 | 说明 |
 |------|-------------------|
 | **按需数据加载** | 客户端按需从服务器读取数据，无需等待推送 |
 | **分布式缓存** | 从远程节点缓存中读取数据 |
@@ -116,27 +115,19 @@ if (ibv_post_send(qp, &wr, &bad_wr)) {
 
 **WC 生成的时间点**：数据已经从远端内存通过 DMA 读回到发起方本地内存。
 
-- **发起方 CQ**：收到一个 READ WC
-  - `opcode` = `IBV_WC_RDMA_READ`
-  - `status` = `IBV_WC_SUCCESS` 表示成功
-  - `byte_len` = 实际读取的字节数（重要！）
-
-- **远端**：不获得任何 WC
-  - 远端 CPU 完全不参与
-  - 只是被网卡读取
+发起方 CQ 会收到一个 READ WC，`opcode` 为 `IBV_WC_RDMA_READ`，`status` 为 `IBV_WC_SUCCESS` 才表示读取成功完成，`byte_len` 表示完成的读取字节数。远端不会获得 WC，远端 CPU 不参与数据搬运，只是由远端网卡响应读请求。
 
 !!! success "发起方收到 WC 时，数据已经可用"
     这是 RDMA READ 与 RDMA WRITE 的**关键区别**：
 
-    - **RDMA READ**：发起方收到 WC 时，数据已经在本地内存中，**保证正确完整**，可以直接使用
-    - **RDMA WRITE**：发起方收到 WC 时，只保证数据到达远端网卡，不保证已落内存
+    RDMA READ 的成功 WC 表示数据已经在本地内存中，可以直接使用；RDMA WRITE 的成功 WC 表示本地 WR 已完成，但远端应用不会自动收到通知。
 
-    因为 RDMA READ 是"拉"操作——发起方主动请求读取数据，只有当数据真正 DMA 到本地内存后，网卡才会生成 CQE。
+    RDMA READ 是拉取操作。只有当数据 DMA 到本地缓冲区后，发起方才会获得成功完成。
 
-!!! note "byte_len 是有用的"
-    RDMA WRITE 的 `byte_len` 通常为 0，但 RDMA READ 的 `byte_len` 等于实际读取的字节数。这个值可能小于你请求的大小——比如远端数据不足，或者某些硬件限制。
+!!! note "`byte_len` 字段"
+    RDMA READ 的 `byte_len` 表示完成的读取字节数。成功完成时，它应与 WR 中 SGE 的总长度一致；若访问超出远端 MR 范围或权限不足，操作会以错误完成，而不是表现为普通短读。
 
-### 完整示例：发起方
+### 示例：发起方
 
 ```c
 #include <infiniband/verbs.h>
@@ -213,7 +204,7 @@ int rdma_read_data(struct ibv_qp *qp, struct ibv_cq *cq,
 }
 ```
 
-### 完整示例：远端（数据源）
+### 示例：远端（数据源）
 
 远端需要准备可被读取的内存，并通过控制面交换地址和 `rkey`：
 
@@ -274,7 +265,7 @@ void update_source_data(struct rdma_read_source *source, const char *new_data) {
 ```
 
 !!! note "远端权限要求"
-    远端 MR 必须设置 `IBV_ACCESS_REMOTE_READ` 权限。不需要 `REMOTE_WRITE` 权限——因为发起方只是读取，不会修改远端数据。
+    远端 MR 必须设置 `IBV_ACCESS_REMOTE_READ` 权限，不需要 `IBV_ACCESS_REMOTE_WRITE` 权限。发起方的本地接收 MR 需要允许本地写入，因为网卡会把读回的数据写入该缓冲区。
 
 ## 2.8.3 最大并发 RDMA READ 限制
 
@@ -282,11 +273,10 @@ void update_source_data(struct rdma_read_source *source, const char *new_data) {
 
 RDMA 协议对并发的 RDMA READ 操作有限制：
 
-- **`max_dest_rd_atomic`**：远端允许的最大并发 RDMA READ 和 Atomic 操作
-- **`max_rd_atomic`**：本地允许的最大并发 RDMA READ 和 Atomic 操作
+`max_dest_rd_atomic` 表示远端作为响应方允许的最大并发 RDMA READ 和 Atomic 操作数，`max_rd_atomic` 表示本地作为发起方允许的最大并发 RDMA READ 和 Atomic 操作数。
 
-!!! note "为什么要限制并发？"
-    每个未完成的 RDMA READ 需要远端网卡维护状态（读请求缓存）。限制并发数是为了防止远端网卡资源耗尽。
+!!! note "并发限制的背景"
+    每个未完成的 RDMA READ 都需要响应方网卡维护请求状态并返回数据。限制并发数是为了保护 responder resources，避免远端网卡资源被过量 READ 或 Atomic 请求耗尽。
 
 ### 配置并发限制
 
@@ -312,7 +302,7 @@ ibv_modify_qp(qp, &attr, attr_mask);
 ```
 
 !!! note "硬件限制很重要"
-    某些硬件（尤其是老设备或模拟设备）的 `max_dest_rd_atomic` 和 `max_rd_atomic` 限制很低。如果程序尝试超过这个限制，`ibv_post_send` 会返回错误或产生 `IBV_WC_REM_OP_ERR`。
+    某些硬件（尤其是老设备或模拟设备）的 `max_dest_rd_atomic` 和 `max_rd_atomic` 限制很低。程序应把 QP 配置和实际投递窗口控制在双方能力范围内；超出限制时，可能在投递阶段失败，也可能在完成阶段体现为远端操作错误。
 
 ### 超限的错误
 
@@ -336,20 +326,18 @@ RDMA READ 的性能特点：
 
 !!! note "RDMA READ 的往返开销"
     RDMA WRITE 是单向的：数据从发起方流向远端。RDMA READ 需要往返：请求从发起方到远端，数据从远端返回发起方。这意味着：
-    - 延迟至少是 RTT（往返时间）
-    - 远端网卡需要额外的工作（读取内存、发送响应）
-    - 对远端的压力比 RDMA WRITE 大
+    READ 的延迟至少包含一次往返时间，远端网卡还需要读取内存并发送响应。因此在相同条件下，频繁 READ 往往比 WRITE 给远端带来更明显的压力。
 
 ### 批量读取优化
 
 ```c
-// 不推荐：逐个读取
+// 逐个读取
 for (int i = 0; i < n; i++) {
     rdma_read_single(remote_addr + i * size, local_buffer + i * size, size);
     wait_for_completion();  // 每次都等待
 }
 
-// 推荐：批量并发读取
+// 批量并发读取
 for (int i = 0; i < n; i++) {
     rdma_read_post_only(remote_addr + i * size, local_buffer + i * size, size);
 }
@@ -437,13 +425,11 @@ if (n > 0 && wc.status != IBV_WC_SUCCESS) {
 | **单边操作** | 发起方主动从远端读取，远端 CPU 不参与 |
 | **必须知道远端 addr 和 rkey** | 通过控制面交换这些信息 |
 | **完成语义** | 发起方收到 WC，包含 `byte_len`，远端无通知 |
-| **本地缓冲区** | 必须预先注册，有 LOCAL_WRITE 权限 |
+| **本地缓冲区** | 必须预先注册，并具有 LOCAL_WRITE 权限 |
 | **远端权限** | 必须有 REMOTE_READ 权限 |
-| **并发限制** | 受 `max_rd_atomic` 和 `max_dest_rd_atomic` 限制 |
+| **并发限制** | 受 `max_rd_atomic` 和 `max_dest_rd_atomic` 限制；不消耗远端 RECV WR |
 | **延迟** | 比 RDMA WRITE 高，需要往返 |
 | **应用场景** | 按需加载、远程缓存、数据库查询 |
 
-!!! note "下一步"
-    RDMA READ 适合"按需拉取"的场景，但延迟比 RDMA WRITE 高。下一章会介绍：
-
-    - **2.9 Atomic**：原子操作，分布式同步
+!!! note "后续章节"
+    RDMA READ 适合"按需拉取"的场景，但延迟比 RDMA WRITE 高。下一章会介绍远端 Atomic 操作。

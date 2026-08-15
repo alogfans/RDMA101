@@ -9,4 +9,4 @@
 - queue depth、多 QP、多 CQ 和线程模型；
 - MR cache、内存池和注册开销；
 - polling、interrupt、CPU 亲和性和 NUMA；
-- 严肃基准测试中的可复现性和误差来源。
+- 基准测试中的可复现性和误差来源。

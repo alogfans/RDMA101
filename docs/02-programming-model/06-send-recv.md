@@ -1,33 +1,20 @@
 # 2.6 SEND/RECV 操作
 
-前几章我们讨论了 RDMA 的资源模型：Context、PD、MR、QP、CQ。现在我们开始深入具体操作。
+前几章讨论了 RDMA 的资源模型：Context、PD、MR、QP、CQ。本章开始讨论具体操作。
 
 RDMA 提供两类操作：**one-sided**（RDMA READ/WRITE/Atomic）和 **two-sided**（SEND/RECV）。SEND/RECV 是最接近传统 TCP socket 语义的 RDMA 操作，理解它是掌握 RDMA 双边通信的基础。
 
-!!! note "推荐阅读资源"
-    RDMA 的官方编程手册和 www.rdmamojo.com 网站提供了更完整的 API 参考。本章建立概念框架，具体 API 的细节可以在需要时查阅这些资源。
+## 2.6.1 SEND/RECV 的使用场景
 
-## 2.6.1 先从问题开始：为什么需要 SEND/RECV
+RDMA 已经提供 READ、WRITE 和 Atomic 等单边操作，但许多通信仍然需要接收方获得明确的消息完成事件。
 
-在深入代码之前，让我们先理解一个根本问题：**RDMA 已经有了单边操作，为什么还需要双边操作？**
+控制消息、RPC 请求、完成通知和元数据交换都属于这类场景。SEND/RECV 的价值不在于替代 one-sided 操作，而在于提供接收方参与的消息语义。
 
-答案是：**有些场景需要双方的明确参与，单边操作不合适**。
+### 双边与单边
 
-### 双边 vs 单边：本质区别
+双边操作（SEND/RECV）要求发送方和接收方都参与，接收方必须提前投递 RECV WR，因此双方都能通过 completion 感知操作发生。单边操作（RDMA READ/WRITE）则只有发起方投递 WR，远端 CPU 不参与数据搬运，也不会因为基本 READ/WRITE 自动得到完成事件。
 
-**双边操作（SEND/RECV）**：
-
-- 发送方和接收方都参与
-- 接收方必须"准备好"（投递 RECV WR）
-- 双方都知道操作发生了
-
-**单边操作（RDMA READ/WRITE）**：
-
-- 只有发起方参与
-- 远端 CPU 完全不参与
-- 远端可能不知道操作发生了
-
-### SEND/RECV 的本质
+### SEND/RECV 的执行过程
 
 ```mermaid
 sequenceDiagram
@@ -59,23 +46,25 @@ sequenceDiagram
 
 ### SEND/RECV 与 TCP socket 的类比
 
-如果你熟悉 TCP socket，可以这样理解：
+SEND/RECV 与 TCP socket 可以作如下对照：
 
 | TCP socket | RDMA SEND/RECV | 差异 |
 |-----------|----------------|------|
 | `send()` | `ibv_post_send(SEND)` | TCP 会拷贝数据，RDMA 直接 DMA |
 | `recv()` | 提前 `ibv_post_recv()` | TCP 可以随时调用，RDMA 必须提前准备 |
-| 内核缓冲区 | 用户注册内存 | TCP 管理缓冲区，RDMA 你自己管理 |
+| 内核缓冲区 | 用户注册内存 | TCP 管理缓冲区，RDMA 由应用管理 |
 | 阻塞返回 | 轮询 CQ | TCP 同步等待，RDMA 异步轮询 |
 
 !!! note "最关键的区别：接收方必须提前准备"
-    TCP 可以随时调用 `recv()`，如果没有数据就阻塞或返回 EAGAIN。RDMA 必须在消息到达**之前**投递 RECV WR。如果没有预先投递的 RECV WR，消息会被丢弃。
+    TCP 可以在没有数据时阻塞等待或返回 `EAGAIN`。RDMA RECV 必须在消息到达前投递。对于 RC QP，如果没有可用 RECV WR，接收方会返回 RNR NAK，发送方按 `rnr_retry` 配置重试；重试耗尽后，发送方会得到错误完成。
+
+    会消耗 Receive WR 的远端操作主要是 `SEND`、`SEND_WITH_IMM` 和 `RDMA_WRITE_WITH_IMM`。基本 RDMA WRITE、RDMA READ 和 Atomic 不消耗远端 Receive WR。
 
 ### SEND/RECV 的典型应用场景
 
 SEND/RECV 适用于需要双方明确参与的场景：
 
-| 场景 | 为什么用 SEND/RECV |
+| 场景 | 说明 |
 |------|-------------------|
 | **控制消息传递** | 需要双方确认，协商参数 |
 | **RPC 请求/响应** | 客户端发送请求，服务端返回响应 |
@@ -107,22 +96,14 @@ if (ibv_post_send(qp, &wr, &bad_wr)) {
 
 ### SEND 操作的完成语义
 
-**WC 生成的时间点**：远端网卡已经接收并确认了这个消息。
+**WC 生成的时间点**：以本教程主线的 RC QP 为背景，远端网卡已经接收并确认了这个消息。
 
-- **发送方 CQ**：收到一个 SEND WC
-  - `opcode` = `IBV_WC_SEND`
-  - `status` = `IBV_WC_SUCCESS` 表示成功
-  - `byte_len` = 发送的字节数
-
-- **接收方 CQ**：同时收到一个 RECV WC
-  - `opcode` = `IBV_WC_RECV`
-  - `byte_len` = 接收的字节数
-  - 数据已经在接收缓冲区中
+发送方 CQ 会收到一个 SEND WC，`opcode` 为 `IBV_WC_SEND`，`status` 为 `IBV_WC_SUCCESS` 才表示成功。发送方 SEND WC 中的 `byte_len` 不作为发送长度使用。接收方 CQ 会收到一个 RECV WC，`opcode` 为 `IBV_WC_RECV`，`byte_len` 表示接收的字节数，数据已经在接收缓冲区中。
 
 !!! note "SEND 完成时数据已在远端"
-    当发送方获得 SEND WC 时，远端网卡已经接收并确认了消息。远端的接收缓冲区中已经有了数据，但远端 CPU 此时可能还没有处理这段数据——取决于它何时轮询 CQ。
+    当发送方获得 SEND WC 时，本地发送 WR 已完成，发送 buffer 可以复用。远端应用是否已经处理消息，取决于远端是否轮询并处理对应的 RECV WC。
 
-### 完整示例：发送方
+### 示例：发送方
 
 ```c
 #include <infiniband/verbs.h>
@@ -181,8 +162,7 @@ int send_message(struct ibv_qp *qp, struct ibv_cq *cq,
         }
 
         if (wc.opcode == IBV_WC_SEND) {
-            printf("SEND completed, %u bytes sent, wr_id=%lu\n",
-                   wc.byte_len, wc.wr_id);
+            printf("SEND completed, wr_id=%lu\n", wc.wr_id);
             return 0;
         } else {
             printf("Got unexpected opcode: %d\n", wc.opcode);
@@ -199,10 +179,10 @@ int send_message(struct ibv_qp *qp, struct ibv_cq *cq,
 
 **传统 TCP**：可以随时调用 `recv()`，如果没有数据，调用会阻塞或返回 EAGAIN。
 
-**RDMA RECV**：必须在消息到达**之前**投递 RECV WR。如果没有预先投递的 RECV WR，到达的消息会被丢弃。
+**RDMA RECV**：必须在消息到达**之前**投递 RECV WR。对于 RC QP，没有预投递 RECV WR 会触发 RNR 重试，重试耗尽后发送方得到错误完成。
 
-!!! note "为什么必须提前投递？"
-    RDMA 的数据路径完全绕过内核。没有内核来帮你"缓存"到达的消息。网卡直接把数据写入你指定的缓冲区。如果你没有告诉网卡"把数据写到哪里"，消息就无处安放，只能丢弃。
+!!! note "提前投递的原因"
+    RDMA 数据路径没有 socket buffer 这类内核接收队列。网卡需要把到达的数据写入应用预先注册并投递的缓冲区；没有可用 RECV WR 时，RC 连接会进入 RNR 重试路径。
 
 ### 投递 RECV WR
 
@@ -227,16 +207,14 @@ if (ibv_post_recv(qp, &wr, &bad_wr)) {
 投递 RECV WR → 接收队列中等待 → 消息到达 → 数据写入缓冲区 → 生成 RECV WC
 ```
 
-**重要时间点**：
-
-- 投递成功 ≠ 有消息到达
-- 有消息到达 ≠ WC 已生成（需要轮询）
-- WC 生成 = 数据已在缓冲区中，可直接访问
+这里要区分几个时间点：投递成功不表示已有消息到达，消息到达也不表示应用已经取到了 WC；只有对应 RECV WC 生成并被应用轮询到之后，应用才可以按协议处理这段接收缓冲区。
 
 !!! note "WC 生成时数据已可用"
-    当 RECV WC 生成时，数据**已经在接收缓冲区中**，可以直接访问。不需要任何额外的同步操作——网卡已经完成了 DMA 写入。
+    当 RECV WC 生成时，数据已经在接收缓冲区中，可以直接访问。应用仍需按照自己的消息格式解析 `byte_len` 和缓冲区内容。
 
-### 完整示例：接收方
+    `ibv_post_recv` 返回后，`struct ibv_recv_wr` 和 `struct ibv_sge` 这类描述符可以复用；真正不能提前复用的是 SGE 指向的接收缓冲区。该缓冲区要等到对应 RECV WC 返回后，才适合交给应用处理或再次投递。
+
+### 示例：接收方
 
 ```c
 #include <infiniband/verbs.h>
@@ -361,16 +339,10 @@ flowchart LR
 
 ### RNR 的后果
 
-1. **发送方会收到错误 WC**：
-   - `status` = `IBV_WC_RNR_RETRY_EXC_ERR`（RNR 重试超限）
-   - 或 `IBV_WC_RESP_TIMEOUT_ERR`（响应超时）
+RNR 首先会触发发送方按 `rnr_retry` 配置重试。若重试耗尽，发送方会收到错误 WC，常见状态是 `IBV_WC_RNR_RETRY_EXC_ERR`，也可能表现为重试超限错误。进入错误路径后，RC QP 可能需要重建，应用应把它当作协议层接收队列管理失败来处理。
 
-2. **连接可能出现问题**：
-   - RC QP 会进入错误状态
-   - 需要重新建立连接
-
-!!! note "RNR 是 SEND/REVC 特有的错误"
-    RDMA WRITE 不会产生 RNR 错误，因为它是单边操作，不需要远端准备接收缓冲区。只有 SEND/RECV 这种双边操作才会有 RNR。
+!!! note "RNR 是 SEND/RECV 相关错误"
+    基本 RDMA WRITE、RDMA READ 和 Atomic 不会消耗远端 Receive WR，因此不会因为缺少远端接收缓冲区而走 RNR 路径。`RDMA_WRITE_WITH_IMM` 是例外：它会在远端生成 Receive WC，因此也需要远端提前投递 RECV WR。
 
 ### 如何避免 RNR
 
@@ -436,8 +408,7 @@ ibv_modify_qp(qp, &attr, attr_mask);
 ```
 
 !!! note "RNR 重试参数的选择"
-    - `min_rnr_timer`：控制多快重试。太小会增加网络负载，太大会降低响应速度。
-    - `rnr_retry`：控制重试多少次后放弃。太大会导致长时间阻塞，太小会容错性差。
+    `min_rnr_timer` 控制多快重试，太小会增加网络负载，太大会降低响应速度。`rnr_retry` 控制重试多少次后放弃，太大会导致故障发现变慢，太小又会降低短暂拥塞下的容错性。
 
 ## 2.6.5 SEND with Immediate
 
@@ -455,7 +426,7 @@ ibv_modify_qp(qp, &attr, attr_mask);
 | **用途** | 小元数据传递、通知机制 |
 
 !!! note "Immediate 数据的实际用途"
-    最典型的用途是通知机制。比如 RDMA WRITE 是单边的，远端不知道数据写入了。可以使用 RDMA WRITE with IMM：数据写入远端，同时发送一个 32 位通知，远端收到 RECV WC 时就知道数据已经写好了。
+    典型用途是通知机制。例如 RDMA WRITE 是单边操作，远端不会自动得到完成事件。使用 RDMA WRITE with IMM 时，发起方写入数据并携带一个 32 位通知，远端通过 RECV WC 获得通知。
 
 ### 投递 SEND with Immediate
 
@@ -561,25 +532,22 @@ ibv_post_send(qp, &wr, &bad_wr);
 ```
 
 !!! note "Scatter-Gather 的限制"
-    - `max_send_sge` 和 `max_recv_sge` 限制了单个 WR 可以使用的 SGE 数量
-    - 如果消息大小超过所有 SGE 总长度，多余部分会被丢弃
-    - 每个额外的 SGE 都会消耗硬件资源
+    `max_send_sge` 和 `max_recv_sge` 限制了单个 WR 可以使用的 SGE 数量。如果到达消息大于接收端所有 SGE 的总长度，操作会以长度错误完成。每个额外的 SGE 都会消耗硬件资源；同一个 WR 内也不要让多个 SGE 覆盖同一段内存，因为设备访问 SGE 的内部顺序不应被应用依赖。
+
+!!! note "UD QP 的接收缓冲区"
+    如果使用 UD QP，接收缓冲区通常要额外预留 40 字节空间给 GRH。即使某些消息没有实际 GRH，按这个约定预留空间也能避免从 RC/UC 迁移到 UD 时出现接收长度和数据偏移错误。本教程主线以 RC 为背景，UD 细节会在高级主题中再展开。
 
 ## 2.6.7 关键要点回顾
 
 | 概念 | 要点 |
 |------|------|
 | **双边操作** | 双方都参与，不同于 one-sided 操作 |
-| **必须提前投递 RECV WR** | 否则消息会被丢弃，导致 RNR 错误 |
+| **必须提前投递 RECV WR** | 否则 RC 连接会进入 RNR 重试路径，重试耗尽后产生错误完成 |
 | **RNR 错误** | 接收方没有足够的 RECV WR，发送方会收到错误 |
 | **保持 RECV WR 水位线** | 避免耗尽，通常维持 8-16 个未完成的 RECV WR |
 | **Immediate 数据** | 32 位元数据，不占用缓冲区，原子传递 |
 | **Scatter-Gather** | 支持多缓冲区操作，减少拷贝 |
 | **完成语义** | SEND WC 表示远端已确认，RECV WC 表示数据已可访问 |
 
-!!! note "下一步"
-    SEND/RECV 是 RDMA 双边通信的基础，适合控制消息传递和需要双方确认的场景。接下来的章节会介绍单边操作：
-
-    - **2.7 RDMA WRITE**：单边写入，远端 CPU 不参与
-    - **2.8 RDMA READ**：单边读取，主动拉取数据
-    - **2.9 Atomic**：原子操作，分布式同步
+!!! note "后续章节"
+    SEND/RECV 是 RDMA 双边通信的基础，适合控制消息传递和需要接收方获得完成事件的场景。后续章节将转向单边写入、单边读取和远端原子操作。

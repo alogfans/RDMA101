@@ -1,21 +1,20 @@
 # 2.9 Atomic 操作
 
-前几章我们讨论了 RDMA WRITE 和 READ——单边操作。发起方写入或读取远端内存，远端 CPU 完全不参与。
+前几章讨论了 RDMA WRITE 和 READ。它们都是单边操作：发起方写入或读取远端内存，远端 CPU 不参与数据搬运。
 
 本章讨论另一种单边操作：**Atomic**。它允许发起方在远端内存上执行原子操作，远端 CPU 仍然不参与，但网卡会执行更复杂的操作——比较并交换、取数加。
 
-!!! note "推荐阅读资源"
-    RDMA 的官方编程手册和 www.rdmamojo.com 网站提供了更完整的 API 参考。本章建立概念框架，具体 API 的细节可以在需要时查阅这些资源。
+在基础 Verbs 模型中，Atomic 通常只在可靠连接类传输上使用，例如 RC QP。它不消耗远端 Receive WR；远端需要提供的是带 `IBV_ACCESS_REMOTE_ATOMIC` 权限的 MR，以及 QP 上允许的 READ/Atomic 并发资源。
 
-## 2.9.1 先从问题开始：为什么需要 Atomic 操作
+## 2.9.1 Atomic 操作的使用场景
 
-在深入代码之前，让我们先理解：**为什么有了 RDMA READ/WRITE 还需要 Atomic 操作？**
+Atomic 操作用于远端状态的同步和协调。它不是普通 RDMA READ/WRITE 的替代品，而是在需要原子更新远端 64 位值时使用的特殊操作。
 
-答案是：**分布式系统需要同步机制，而普通 RDMA 操作不够用**。
+本章以分布式锁和计数器为例说明 CAS 与 Fetch & Add 的使用方式。至于更完整的分布式同步协议设计，需要结合一致性模型、失败恢复和上层协议讨论，本章不展开。
 
 ### 一个经典问题：分布式锁
 
-假设你想实现一个分布式锁——多个节点竞争一个共享资源。你会怎么做？
+以分布式锁为例，多个节点可能同时竞争同一个远端锁变量。
 
 **尝试1：用 RDMA WRITE**
 
@@ -56,7 +55,7 @@ atomic_compare_and_swap(remote_lock_addr,
 
 Atomic 操作保证读-修改-写这三个步骤是原子的——不会有其他节点插入其中。
 
-### Atomic 操作的本质
+### Atomic 操作的执行过程
 
 ```mermaid
 sequenceDiagram
@@ -92,7 +91,9 @@ sequenceDiagram
 {: .figure-caption }
 
 !!! note "原子操作在网卡上执行"
-    关键点：读-修改-写这三个步骤是在**远端网卡上**完成的，不是在发起方 CPU 上。这意味着即使有多个节点同时发起 Atomic 操作，网卡也能保证它们按顺序执行，不会产生竞态条件。
+    关键点是：读-修改-写由远端网卡按原子语义执行，而不是由发起方 CPU 分多步完成。多个发起方同时访问同一远端原子变量时，网卡会按照原子操作语义串行化这些更新。
+
+    Atomic 的返回值会写入发起方 WR 中 `sg_list` 描述的本地缓冲区。这个缓冲区需要注册，并允许本地写入；发起方收到成功 WC 后，才能读取其中的原始值。
 
 ### Atomic 操作的类型
 
@@ -107,7 +108,7 @@ RDMA 支持两种原子操作：
 
 Atomic 操作适用于需要远程同步和协调的场景：
 
-| 场景 | 为什么用 Atomic |
+| 场景 | 说明 |
 |------|-----------------|
 | **分布式锁** | 原子地获取锁，避免竞态条件 |
 | **无锁队列** | 原子地更新队列索引 |
@@ -117,12 +118,11 @@ Atomic 操作适用于需要远程同步和协调的场景：
 ### 扩展原子操作说明
 
 !!! info "文献中的扩展原子操作"
-    标准 RDMA verbs 只支持上述两种原子操作（CAS 和 FA），但你在阅读论文时可能会遇到其他原子操作，如：
+    标准 RDMA verbs 中常用的远端原子操作是 CAS 和 FA。阅读论文或厂商示例时，可能会遇到扩展原子操作，如：
 
-    - **Masked Compare-and-Swap**：带掩码的 CAS，只比较和修改 64 位值中的某些位
-    - **Masked Fetch-and-Add**：带掩码的 FA，只对 64 位值中的某些位进行加法
+    Masked Compare-and-Swap 是带掩码的 CAS，只比较和修改 64 位值中的某些位；Masked Fetch-and-Add 是带掩码的 FA，只对 64 位值中的某些位进行加法。
 
-    这些通常是 **MLX 网卡早期版本**（ConnectX-4/5 era）提供的扩展接口，不属于标准 RDMA verbs。如果论文中使用这些操作，可能需要：
+    这些通常属于厂商扩展接口，不属于可移植的基础 Verbs 编程模型。如果论文或系统使用这些操作，如果论文中使用这些操作，可能需要：
 
     1. 使用厂商提供的特定 verbs 扩展（如 `ibv_exp_*` 函数）
     2. 使用特定版本的网卡和驱动
@@ -134,13 +134,7 @@ Atomic 操作适用于需要远程同步和协调的场景：
 
 ### CAS 操作原理
 
-CAS 是一种经典的原子操作，它原子性地执行以下步骤：
-
-1. 读取远端 64 位值
-2. 比较该值是否与 `compare` 值相等
-3. 如果相等，将 `swap` 值写入远端
-4. 如果不相等，保持远端值不变
-5. 返回原始值
+CAS 是一种经典的原子操作。它会原子性地读取远端 64 位值，并将该值与 `compare` 值比较；如果二者相等，就把 `swap` 值写入远端，否则保持远端值不变。无论是否交换，操作都会把修改前的原始值返回给发起方。
 
 ```mermaid
 flowchart LR
@@ -154,10 +148,9 @@ flowchart LR
 图 2-14：CAS 操作的逻辑流程。
 {: .figure-caption }
 
-!!! note "CAS 的返回值告诉你结果"
-    CAS 返回的是**原始值**，而不是"是否成功"的布尔值。你需要自己比较返回值和期望值：
-    - 如果返回值 == 期望值 → CAS 成功
-    - 如果返回值 != 期望值 → CAS 失败（值已被其他节点修改）
+!!! note "CAS 的返回值"
+    CAS 返回的是**原始值**，而不是“是否成功”的布尔值。应用需要比较返回值和期望值：
+    如果返回值等于期望值，说明 CAS 成功；如果返回值不等于期望值，说明远端值已被其他节点修改，本次 CAS 没有完成交换。
 
 ### CAS 操作的参数
 
@@ -170,7 +163,7 @@ struct ibv_send_wr wr = {
     .send_flags = IBV_SEND_SIGNALED,
     .wr.atomic.remote_addr = remote_addr,  // 远端地址
     .wr.atomic.rkey = remote_rkey,         // 远端 key
-    .wr.atomic.compare = compare_value,   // 比较值（64 位）
+    .wr.atomic.compare_add = compare_value, // 比较值（64 位）
     .wr.atomic.swap = swap_value,         // 交换值（64 位）
     .next = NULL
 };
@@ -213,7 +206,7 @@ int try_acquire_lock(struct distributed_lock *lock) {
         .send_flags = IBV_SEND_SIGNALED,
         .wr.atomic.remote_addr = lock->remote_lock_addr,
         .wr.atomic.rkey = lock->remote_lock_rkey,
-        .wr.atomic.compare = LOCK_FREE,       // 期望是 FREE
+        .wr.atomic.compare_add = LOCK_FREE,   // 期望是 FREE
         .wr.atomic.swap = LOCK_ACQUIRED,     // 设置为 ACQUIRED
         .next = NULL
     };
@@ -256,18 +249,13 @@ int try_acquire_lock(struct distributed_lock *lock) {
 ```
 
 !!! note "CAS 的正确使用模式"
-    CAS 不是"设置并返回成功与否"，而是"比较并返回原始值"。你需要检查返回的原始值来判断 CAS 是否成功。这是一个常见的理解误区。
+    CAS 不是“设置并返回成功与否”，而是“比较并返回原始值”。应用需要检查返回的原始值来判断 CAS 是否成功。
 
 ## 2.9.3 Fetch & Add（FA）
 
 ### FA 操作原理
 
-Fetch & Add 是另一种原子操作，它原子性地执行：
-
-1. 读取远端 64 位值
-2. 将该值与 `add` 值相加
-3. 将结果写回远端
-4. 返回原始值
+Fetch & Add 是另一种原子操作。它会原子性地读取远端 64 位值，将该值与 `add` 值相加并写回远端，同时把加法之前的原始值返回给发起方。
 
 ```mermaid
 flowchart LR
@@ -280,7 +268,7 @@ flowchart LR
 {: .figure-caption }
 
 !!! note "FA 返回的是原始值，不是新值"
-    FA 返回的是**加法之前的原始值**，不是加法后的新值。如果你需要新值，需要自己计算：`new_value = original + add`。
+    FA 返回的是**加法之前的原始值**，不是加法后的新值。如果需要新值，应用可以自行计算：`new_value = original + add`。
 
 ### FA 操作的参数
 
@@ -385,30 +373,30 @@ uint32_t *remote_ptr = ...;  // 错误！
 assert((uint64_t)remote_addr % sizeof(uint64_t) == 0);
 ```
 
-!!! note "为什么只有 64 位？"
+!!! note "64 位操作粒度"
     RDMA 的 Atomic 操作设计要满足硬件实现的高效性。64 位是现代处理器和网卡最自然的原子操作粒度。支持任意大小会大大增加硬件复杂度。
 
 ### 并发限制
 
 与 RDMA READ 一样，Atomic 操作也受并发限制：
 
-- **`max_dest_rd_atomic`**：远端允许的最大并发 Atomic 操作
-- **`max_rd_atomic`**：本地允许的最大并发 Atomic 操作
+`max_dest_rd_atomic` 表示远端作为响应方允许的最大并发 Atomic 操作数，`max_rd_atomic` 表示本地作为发起方允许的最大并发 Atomic 操作数。
+
+这些字段在协议资源上与 RDMA READ 共享，很多程序会把 READ 和 Atomic 统一纳入同一个 outstanding 窗口管理。也就是说，即使每个 Atomic 操作只改 8 字节，过量并发仍可能耗尽远端 responder resources。
 
 ### 权限要求
 
 远端 MR 必须设置正确的权限：
 
 ```c
-int access = IBV_ACCESS_LOCAL_WRITE |     // 必需
-             IBV_ACCESS_REMOTE_WRITE |    // 必需
+int access = IBV_ACCESS_LOCAL_WRITE |     // 设置 REMOTE_ATOMIC 时必须同时设置
              IBV_ACCESS_REMOTE_ATOMIC;    // Atomic 操作必需
 
 struct ibv_mr *mr = ibv_reg_mr(pd, buffer, size, access);
 ```
 
-!!! note "REMOTE_ATOMIC 需要配合 REMOTE_WRITE"
-    设置 `IBV_ACCESS_REMOTE_ATOMIC` 时，必须**同时**设置 `IBV_ACCESS_REMOTE_WRITE`。这是 RDMA 规范的要求。
+!!! note "REMOTE_ATOMIC 需要配合 LOCAL_WRITE"
+    `ibv_reg_mr` 要求：设置 `IBV_ACCESS_REMOTE_WRITE` 或 `IBV_ACCESS_REMOTE_ATOMIC` 时，必须同时设置 `IBV_ACCESS_LOCAL_WRITE`。Atomic 操作本身不要求同时设置 `IBV_ACCESS_REMOTE_WRITE`，除非同一段 MR 还要允许远端 RDMA WRITE。
 
 ## 2.9.5 错误处理
 
@@ -422,7 +410,6 @@ struct ibv_mr *mr = ibv_reg_mr(pd, buffer, size, access);
 // 解决：确保远端 MR 注册时设置了正确的权限
 
 int access = IBV_ACCESS_LOCAL_WRITE |
-             IBV_ACCESS_REMOTE_WRITE |
              IBV_ACCESS_REMOTE_ATOMIC;  // 必须设置
 ```
 
@@ -487,21 +474,10 @@ if (n > 0 && wc.status != IBV_WC_SUCCESS) {
 | **只支持 64 位** | 只能操作 64 位值，地址必须 8 字节对齐 |
 | **CAS 原理** | 比较并交换，返回原始值，用于条件更新 |
 | **FA 原理** | 取数加，返回原始值，用于计数和序列 |
-| **权限要求** | 远端 MR 必须有 REMOTE_ATOMIC 和 REMOTE_WRITE 权限 |
+| **权限要求** | 远端 MR 必须有 REMOTE_ATOMIC；设置 REMOTE_ATOMIC 时还必须设置 LOCAL_WRITE |
 | **并发限制** | 受 `max_rd_atomic` 和 `max_dest_rd_atomic` 限制 |
-| **返回值** | 操作结果（原始值）写入本地缓冲区 |
+| **返回值** | 原始值写入发起方 `sg_list` 指向的本地缓冲区 |
 | **应用场景** | 分布式锁、无锁队列、引用计数、ID 生成 |
 
-!!! note "编程模型章节完成"
-    恭喜！你已经完成了 RDMA 编程模型的核心内容：
-    - **2.6 SEND/RECV**：双边通信，控制消息传递
-    - **2.7 RDMA WRITE**：单边写入，高效数据传输
-    - **2.8 RDMA READ**：单边读取，按需数据加载
-    - **2.9 Atomic**：原子操作，分布式同步
-
-    这些操作构成了 RDMA 编程的基础。接下来的学习方向：
-    - Work Request 和 Scatter-Gather 详解
-    - 高级资源对象（SRQ、AH、MW）
-    - 错误处理和事件机制
-    - 性能优化技巧
-    - 完整的应用案例
+!!! note "编程模型章节小结"
+    第二篇到这里完成了 RDMA 编程模型的主线：先建立 Context、PD、MR、QP、CQ 这些资源对象，再说明 SEND/RECV、RDMA WRITE、RDMA READ 和 Atomic 这些基本操作。后续篇章会在这个基础上转入更具体的实现机制、性能取舍和系统案例。

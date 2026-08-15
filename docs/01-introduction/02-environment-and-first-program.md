@@ -1,6 +1,6 @@
 # 1.2 环境配置与第一个 RDMA 程序
 
-上一章介绍了 RDMA 与 TCP socket 的核心区别。本章开始动手实践——先检查 RDMA 环境、运行基础工具测试，然后运行一个最小化的 RDMA WRITE 程序，亲眼看到"把数据直接写入远端内存"的效果。
+上一章介绍了 RDMA 与 TCP socket 的核心区别。本章进入实践部分：先检查 RDMA 环境并运行基础测试，再运行一个最小化的 RDMA WRITE 程序，观察“把数据写入远端内存”的基本效果。
 
 ## 1.2.1 RDMA 环境配置与设备检查
 
@@ -84,7 +84,7 @@ ibv_devices
     mlx5_1          	0000********0006
 ```
 
-✅ **成功标志**：输出中至少有一个设备。真实网卡通常显示为 `mlx5_0`、`mlx5_1`；Soft-RoCE 设备显示为 `rxe0`。
+**判定标准**：输出中至少有一个设备。真实网卡通常显示为 `mlx5_0`、`mlx5_1`；Soft-RoCE 设备显示为 `rxe0`。
 
 ---
 
@@ -109,7 +109,7 @@ hca_id:	mlx5_0
 			link_layer:		Ethernet
 ```
 
-✅ **成功标志**：`state` 应为 `PORT_ACTIVE`，`link_layer` 显示 `Ethernet`（RoCE）或 `InfiniBand`。
+**判定标准**：`state` 应为 `PORT_ACTIVE`，`link_layer` 显示 `Ethernet`（RoCE）或 `InfiniBand`。
 
 ---
 
@@ -144,19 +144,19 @@ ib_write_bw -d mlx5_0 10.10.0.3
 ---------------------------------------------------------------------------------------
 ```
 
-✅ **成功标志**：测试正常完成，最后一行显示带宽和消息速率数值。
+**判定标准**：测试正常完成，最后一行显示带宽和消息速率数值。
 
 环境检查完成！下一节，我们运行一个最小化的 RDMA 程序。
 
 ## 1.2.2 单边 RDMA WRITE 样例
 
-让我们通过一个最小程序来观察单边 RDMA 的基本结构。这个样例会演示 RDMA 最核心的特点：**client 可以直接把数据写入 server 的内存，server 的 CPU 不参与数据搬运**。
+本节通过一个最小程序观察单边 RDMA 的基本结构。样例展示的核心现象是：client 可以把数据写入 server 已注册并授权的内存，server CPU 不参与这次数据搬运。
 
 样例放在 `examples/one_sided_write/` 目录下，源码可在 [GitHub](https://github.com/alogfans/RDMA101/tree/main/examples/one_sided_write) 查看。
 
 ### 程序做了什么？
 
-让我们一步步看这个程序做了什么：
+程序流程如下：
 
 ```mermaid
 sequenceDiagram
@@ -178,7 +178,7 @@ sequenceDiagram
 **关键步骤：**
 
 1. **注册内存**：server 和 client 都注册本地内存，告诉 RDMA 网卡哪些内存区域可以直接访问。
-2. **交换元数据**：双方通过 TCP 交换 QP 信息、buffer 地址和 `rkey`（这是授权远端访问的"钥匙"）。
+2. **交换元数据**：双方通过 TCP 交换 QP 信息、buffer 地址和 `rkey`。
 3. **发起写入**：client 使用 `IBV_WR_RDMA_WRITE` 写入 server 的远端内存——这一步不需要 server CPU 参与。
 4. **验证结果**：server 不调用 `recv` 接收这段数据，只在 client 完成写入后查看自己的 buffer。
 
@@ -224,7 +224,7 @@ client: RDMA WRITE completed, wrote 21 bytes
 server: buffer after RDMA WRITE: "hello one-sided rdma"
 ```
 
-✅ **成功标志**：两端都显示预期输出，server 的 buffer 中出现了 client 发送的内容。
+**判定标准**：两端都显示预期输出，server 的 buffer 中出现了 client 写入的内容。
 
 ### 小结
 

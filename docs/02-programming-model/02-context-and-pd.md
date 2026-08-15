@@ -2,53 +2,29 @@
 
 上一节我们从整体上观察了一个 RDMA 程序的结构。现在开始逐个深入每个核心资源。
 
-本章讨论最基础的两个对象：Context 和 Protection Domain（保护域）。它们是所有 RDMA 程序的起点——没有 Context，程序无法与设备对话；没有 PD，无法创建任何可用于通信的资源。
+本章讨论最基础的两个对象：Context 和 Protection Domain（保护域）。Context 是程序访问 RDMA 设备的入口；PD 则把 QP、MR、AH 等本地资源放进同一个访问域中，限制它们之间能否配合使用。
 
-!!! note "推荐阅读资源"
-    RDMA 的官方编程手册和 www.rdmamojo.com 网站提供了更完整的 API 参考。本章建立概念框架，具体 API 的细节可以在需要时查阅这些资源。
+## 2.2.1 Context 与 PD 的作用
 
-## 2.2.1 先从两个问题开始
+Context 和 PD 是后续资源创建的基础。Context 连接应用与 RDMA 设备，PD 则组织同一设备上下文下的资源访问关系。理解这两个对象后，再看 MR、QP、CQ 的依赖关系会更清楚。
 
-在深入代码之前，让我们先回答两个根本问题：
+### Context：设备入口
 
-1. **为什么程序需要 Context？**
-2. **为什么需要 PD，它"保护"了什么？**
+Context 可以看作程序与 RDMA 设备的会话入口：打开文件需要 `FILE*` 或 `fd`，建立网络连接需要 `socket`，使用 RDMA 设备则需要 `ibv_context`。
 
-理解这两个问题的答案，后面的内容就自然顺畅了。
+**Context 与设备的对应关系**：每个 RDMA 设备实例（如 `mlx5_0`、`mlx5_1`）可以被打开为一个设备上下文。每次调用 `ibv_open_device` 都会返回一个独立的 `ibv_context`。同一设备可以被多个进程或线程同时打开，一个设备实例也可能有多个物理端口。通过某个 Context 创建的 PD、CQ、QP、MR 只属于这个设备，不能直接拿到另一张 RDMA 设备上使用；如果程序要使用多张网卡，通常要为每个设备分别创建 Context 及其资源。
 
-### Context：设备的大门
+通过 Context，程序可以查询设备能力、创建 PD/CQ/QP/MR 等资源，也可以查询端口状态。
 
-Context 本质上是程序与 RDMA 设备的会话入口。类比一下：
-
-- 打开文件需要 `FILE*` 或 `fd`
-- 建立网络连接需要 `socket`
-- 使用 RDMA 设备需要 `ibv_context`
-
-**Context 与设备的对应关系**：每个 RDMA 设备实例（如 `mlx5_0`、`mlx5_1`）对应一个设备句柄，每次调用 `ibv_open_device` 都会创建一个独立的 Context。
-
-- **一个设备可以被多个 Context 同时打开** —— 多个进程、或同一个进程的多个线程，都可以打开同一个设备创建各自的 Context
-- **一个设备实例可能有多个端口** —— 例如多口网卡，一个 `mlx5_0` 可能对应 port 1、port 2 等多个物理接口。程序启动时需要指定使用哪个端口，后续的通信都通过该端口进行
-- **Context 及其关联对象只作用于该设备** —— 通过某个 Context 创建的 PD、CQ、QP、MR 都只能用于这一个设备。如果需要使用多张网卡（多卡聚合），需要为每个设备分别创建 Context 及其所有资源
-
-通过 Context，程序可以：
-
-- 询问设备"你能做什么"（查询能力）
-- 要求设备"为我创建资源"（分配 PD、CQ、QP、MR）
-- 查询端口状态
-
-你几乎不会在 Context 上做"实际的通信工作"——它更像是一个管理入口，而不是通信通道本身。
+Context 本身不是通信通道。实际请求会投递到 QP，完成结果会出现在 CQ；Context 更多承担设备入口和资源创建的角色。
 
 ### PD：资源的安全边界
 
-Protection Domain（PD）是 RDMA 安全模型的基础。它实现了一个简单规则：
+Protection Domain（PD）是 RDMA 本地资源隔离模型的一部分。它实现了一个简单规则：
 
 **只有同一 PD 内的资源才能互相访问。**
 
-具体来说：
-
-- QP 要访问某个 MR，两者必须在同一个 PD 中
-- QP 和 AH（Address Handle）也必须在同一个 PD 中
-- 不同 PD 的资源被完全隔离
+具体来说，QP 要访问某个 MR，两者必须在同一个 PD 中；QP 和 AH（Address Handle）也必须在同一个 PD 中；不同 PD 的资源不能直接配合访问。
 
 ```mermaid
 flowchart TB
@@ -79,21 +55,21 @@ flowchart TB
 图 2-4：PD 作为安全边界限定资源访问关系。
 {: .figure-caption }
 
-这就像不同的"沙盒"——每个 PD 是一个独立的安全域。PD 防止了"错误的 QP 访问错误的 MR"这类安全问题。
+可以把 PD 理解为同一设备上下文下的资源分组。它防止"错误的 QP 使用错误的 MR"这类本地资源配置错误。
 
-!!! note "为什么需要 PD，Context 隔离不够吗？"
-    Context 是设备级别的隔离——不同 Context 的资源天然隔离，但 Context 是重量级的会话对象。如果你只想在**同一设备内**隔离不同的资源组（比如控制流和数据流），使用多个 Context 的成本太高。
+!!! note "PD 与 Context 的关系"
+    Context 是设备会话入口；PD 是同一个设备上下文下更细粒度的资源访问域。在同一设备内隔离不同资源组（例如控制流和数据流）时，PD 比重新打开设备更合适。
 
-    PD 的设计就是为此场景：它提供了轻量级的隔离机制，可以在同一个 Context 下快速创建多个 PD。PD 隔离只限制资源访问关系，不涉及设备会话，开销极小。
+    PD 隔离的是本地资源访问关系，不负责连接认证、租户隔离或控制面权限校验。
 
-    简单来说：**Context 隔离设备，PD 隔离资源**。
+    简单来说：**Context 选择设备，PD 组织该设备上的资源访问关系**。
 
-!!! note "PD 不是权限隔离机制"
-    PD 隔离的是资源访问关系，而不是用户权限。它防止的是程序内部的错误配置，而非外部攻击。如果你需要真正的多租户隔离，那需要其他机制（如 SR-IOV 的 VF 隔离）。
+!!! note "PD 不是完整安全方案"
+    PD 能限制 QP、MR、AH 等本地资源是否能配合使用，但它不是用户身份认证机制，也不能替代进程隔离、VF/SR-IOV、IOMMU 或控制面鉴权。
 
 ## 2.2.2 程序如何找到并打开设备
 
-让我们看看实际的代码流程。第一步是"找到设备"。
+实际代码的第一步是获取设备列表。
 
 ### 获取设备列表
 
@@ -115,7 +91,9 @@ if (num_devices == 0) {
 }
 ```
 
-返回的 `dev_list` 是一个指针数组，以 NULL 结尾。每个元素是一个 `ibv_device` 结构，代表一个 RDMA 硬件（或其端口）。
+返回的 `dev_list` 是一个指针数组，以 NULL 结尾。每个元素是一个 `ibv_device`，代表用户态 Verbs 能看到的一个 RDMA 设备实例。
+
+这里有两个细节需要留意。第一，`ibv_get_device_list` 失败时返回 `NULL`；如果系统上没有 RDMA 设备，它可以返回一个非空列表，同时把 `num_devices` 设为 0。因此程序通常要分别处理“调用失败”和“没有设备”两种情况。第二，`ibv_device` 只是设备描述项，后续真正用于查询能力和创建资源的是 `ibv_open_device` 返回的 `ibv_context`。
 
 ### 设备长什么样？
 
@@ -124,11 +102,11 @@ if (num_devices == 0) {
 | 设备名 | 含义 |
 |--------|------|
 | `mlx5_0`、`mlx5_1` | Mellanox ConnectX 系列（最常见） |
-| `rxe_cm0` | 软件模拟的 RDMA 设备（用于开发测试） |
+| `rxe0` | Soft-RoCE/RXE 软件模拟设备（用于开发测试） |
 | `irdma0` | Intel X722 系列 |
-| `siw` | 另一个软件模拟实现 |
+| `siw0` | Soft-iWARP 软件模拟设备 |
 
-你可以打印所有设备：
+可以打印所有设备名：
 
 ```c
 printf("Found %d RDMA device(s)\n", num_devices);
@@ -145,7 +123,7 @@ for (int i = 0; i < num_devices; i++) {
 struct ibv_device *chosen_dev = dev_list[0];
 ```
 
-如果你的机器有多个 RDMA 设备，也可以通过名称选择：
+如果机器有多个 RDMA 设备，也可以通过名称选择：
 
 ```c
 for (int i = 0; i < num_devices; i++) {
@@ -156,8 +134,8 @@ for (int i = 0; i < num_devices; i++) {
 }
 ```
 
-!!! note "选择设备是程序员的决策"
-    RDMA 本身不提供"设备发现"协议——哪些设备适合做什么，需要上层配置或管理员指定。生产环境通常通过配置文件或环境变量来指定。
+!!! note "选择设备是程序配置的一部分"
+    Verbs 可以枚举本机设备，但不会判断哪张卡适合当前连接。生产环境通常通过配置文件、命令行参数或服务发现结果来指定设备、端口和 GID index。
 
 ### 打开设备
 
@@ -175,11 +153,13 @@ if (!ctx) {
 ibv_free_device_list(dev_list);
 ```
 
-`ibv_open_device` 成功后，你就获得了一个与该设备的"会话"——后续所有操作都通过这个 `ctx` 进行。
+`ibv_open_device` 成功后，程序获得与该设备的会话入口。后续查询设备、创建 CQ、分配 PD 等操作都会从这个 `ctx` 开始。
 
-## 2.2.3 询问设备能力
+设备列表在打开目标设备后就可以释放。释放列表并不会使已经打开的 `ibv_context` 失效；但没有打开的 `ibv_device` 指针不应在 `ibv_free_device_list` 之后继续使用。
 
-打开设备后，通常需要查询"这个设备能做什么"。这就像买电脑前看配置清单。
+## 2.2.3 查询设备能力
+
+打开设备后，通常需要查询这个设备支持哪些能力和资源上限。
 
 ### 查询设备属性
 
@@ -200,24 +180,16 @@ printf("  Max SGE per WR: %d\n", device_attr.max_sge);
 printf("  Max CQ entries: %d\n", device_attr.max_cqe);
 ```
 
-这些数字告诉你资源的上限。例如：
+这些数字描述资源上限。例如，`max_qp` 表示最多可以创建多少个 Queue Pair，`max_qp_wr` 表示每个 QP 最多可以有多少个未完成的 Work Request，`max_sge` 表示一个 WR 最多可以包含多少个 Scatter/Gather 元素。
 
-- `max_qp`：最多可以创建多少个 Queue Pair
-- `max_qp_wr`：每个 QP 最多有多少个未完成的 Work Request
-- `max_sge`：一个 WR 最多可以包含多少个 Scatter/Gather 元素
+这些属性更接近“硬件和驱动支持的上限”，不是当前进程一定能够创建到的剩余资源数量。实际创建 QP、CQ、MR 等对象时，还会受到系统内存、权限、其他进程占用以及驱动策略的影响。因此查询能力用于选择合理参数，不能替代创建调用的错误处理。
 
 !!! note "这些限值很重要"
-    某些硬件（特别是老设备或模拟设备）的资源限值很低。例如：
-
-    - 老的 `rxe` 软件模拟设备的 `max_qp` 可能只有几十个
-    - 某些低端或特殊网卡的 `max_sge` 可能只有 1-2 个
-    - `max_cqe` 限制了 CQ 的深度，影响并发请求数
-
-    如果你的程序尝试创建超过设备能力的资源（比如创建超过 `max_qp` 个 QP），`ibv_create_qp` 会直接失败。查询这些限制是保证程序可移植性的第一步——让你的代码能够在不同硬件上都能运行。
+    某些硬件（特别是老设备或模拟设备）的资源限值很低。老的 `rxe` 软件模拟设备可能只允许几十个 QP，某些低端或特殊网卡的 `max_sge` 可能只有 1 到 2 个，`max_cqe` 也会限制 CQ 的深度并影响并发请求数。如果程序尝试创建超过设备能力的资源，相关创建调用会失败。查询这些限制是保证程序可移植性的第一步。
 
 ### 查询端口状态
 
-RDMA 设备通常有多个端口（物理接口），每个端口独立工作。你可以先用 `ibv_devinfo` 命令查看设备有哪些端口及其状态：
+RDMA 设备通常有多个端口（物理接口），每个端口独立工作。可以先用 `ibv_devinfo` 命令查看设备有哪些端口及其状态：
 
 ```bash
 $ ibv_devinfo
@@ -259,11 +231,10 @@ if (port_attr.state != IBV_PORT_ACTIVE) {
 }
 ```
 
+端口属性与设备属性不同，很多字段会随链路状态、子网管理器配置或硬件状态变化而变化。程序启动时通常要检查 `state` 和 `link_layer`，运行中如果收到异步端口事件，也应重新确认端口状态。InfiniBand 场景中 LID、P_Key 等字段更常用；RoCE 场景则通常需要关注 GID、GID index 和 GRH 配置。
+
 !!! note "端口不 ACTIVE 可能的原因"
-    - 网线没插
-    - 链路层协商失败
-    - 子网管理器（SM）未配置（InfiniBand 需要）
-    - 交换机端口被禁用
+    端口不 ACTIVE 的原因可能是网线未连接、链路层协商失败、InfiniBand 子网管理器（SM）未配置，或者交换机端口被禁用。排查时通常先看 `ibv_devinfo`、系统日志和交换机端口状态。
 
 ## 2.2.4 创建 Protection Domain
 
@@ -281,7 +252,8 @@ if (!pd) {
 }
 ```
 
-这个 PD 现在就是你的"安全域"。后续创建的 QP、MR 都要关联到这个 PD，才能互相访问。
+这个 PD 现在就是后续 QP、MR 等资源的访问域。QP 访问本地 MR 时，两者需要属于同一个 PD。
+同一个 PD 还会被用于创建或关联 AH、SRQ、QP、MR、MW 等资源。实际程序中，如果一个 QP 要使用某个 MR 的 `lkey`，两者应来自同一个 PD；如果把不同 PD 下的对象混用，错误通常会在 WR 完成时以保护错误或操作错误暴露出来。
 
 ### 释放 PD
 
@@ -294,15 +266,11 @@ if (ibv_dealloc_pd(pd)) {
 ```
 
 !!! note "释放顺序很重要"
-    只有当 PD 内没有其他资源（QP、MR、AH、SRQ）时，才能释放 PD。这意味着清理顺序是：
-    
-    1. 先销毁所有关联的 QP
-    2. 先注销所有关联的 MR
-    3. 最后才释放 PD
+    只有当 PD 内没有其他依赖资源（QP、MR、AH、SRQ 等）时，才能释放 PD。清理时通常先销毁关联的 QP，再注销关联的 MR，最后才释放 PD。
 
 ## 2.2.5 一个完整的初始化流程
 
-让我们把上述步骤串联起来：
+上述步骤可以串联为如下初始化流程：
 
 ```c
 struct rdma_context {
@@ -315,11 +283,18 @@ struct rdma_context {
 int init_rdma_context(struct rdma_context *rc) {
     int num_devices;
     struct ibv_device **dev_list;
+    struct ibv_device_attr device_attr;
+    int found_active = 0;
 
     // 1. 获取设备列表
     dev_list = ibv_get_device_list(&num_devices);
-    if (!dev_list || num_devices == 0) {
+    if (!dev_list) {
+        perror("Failed to get RDMA devices");
+        return -1;
+    }
+    if (num_devices == 0) {
         fprintf(stderr, "No RDMA devices found\n");
+        ibv_free_device_list(dev_list);
         return -1;
     }
 
@@ -331,15 +306,23 @@ int init_rdma_context(struct rdma_context *rc) {
         return -1;
     }
 
-    // 3. 查找第一个 ACTIVE 的端口
-    for (rc->port_num = 1; rc->port_num <= 255; rc->port_num++) {
-        if (ibv_query_port(rc->ctx, rc->port_num, &rc->port_attr))
-            continue;
-        if (rc->port_attr.state == IBV_PORT_ACTIVE)
-            break;
+    if (ibv_query_device(rc->ctx, &device_attr)) {
+        perror("Failed to query device");
+        ibv_close_device(rc->ctx);
+        return -1;
     }
 
-    if (rc->port_attr.state != IBV_PORT_ACTIVE) {
+    // 3. 查找第一个 ACTIVE 的端口
+    for (rc->port_num = 1; rc->port_num <= device_attr.phys_port_cnt; rc->port_num++) {
+        if (ibv_query_port(rc->ctx, rc->port_num, &rc->port_attr))
+            continue;
+        if (rc->port_attr.state == IBV_PORT_ACTIVE) {
+            found_active = 1;
+            break;
+        }
+    }
+
+    if (!found_active) {
         fprintf(stderr, "No active port found\n");
         ibv_close_device(rc->ctx);
         return -1;
@@ -358,7 +341,7 @@ int init_rdma_context(struct rdma_context *rc) {
 }
 ```
 
-这个函数是几乎所有 RDMA 程序的"标准开头"：找到设备、打开设备、确认端口、创建 PD。
+这个函数展示了 RDMA 程序常见的初始化顺序：找到设备、打开设备、确认端口、创建 PD。
 
 ## 2.2.6 何时需要多个 PD？
 
@@ -367,8 +350,8 @@ int init_rdma_context(struct rdma_context *rc) {
 | 场景 | 原因 |
 |------|------|
 | **控制流与数据流分离** | 为控制和数据创建不同 PD，防止数据 QP 意外访问控制 MR |
-| **多租户隔离** | 在一个进程内为不同客户创建独立的资源组 |
-| **错误隔离** | 一个 PD 内的配置错误不会影响其他 PD 的资源 |
+| **进程内资源分组** | 在同一进程内为不同连接或模块创建独立资源组 |
+| **错误边界更清楚** | 错误 QP 更难误用不属于同一 PD 的 MR |
 
 示例：
 
@@ -389,24 +372,18 @@ struct ibv_mr *mr_data = ibv_reg_mr(pd_data, data_buf, size, ...);
 ```
 
 !!! note "多 PD 是隔离手段，不是性能优化"
-    多 PD 增加管理复杂度，不会提升性能。只有当你确实需要资源隔离时才使用。
+    多 PD 会增加管理复杂度，通常不会提升性能。只有确实需要资源隔离时才使用。
 
 ## 2.2.7 关键要点回顾
 
 | 概念 | 核心要点 |
 |------|----------|
 | **Context** | 与设备的会话入口，所有资源都通过它创建 |
-| **PD** | 安全边界，限定资源访问权限 |
+| **PD** | 本地资源访问域，限定 QP、MR、AH 等资源的配合关系 |
 | **设备列表** | 用完要记得 `ibv_free_device_list` |
 | **端口状态** | 必须是 ACTIVE 才能用于通信 |
 | **资源释放顺序** | 先释放 PD 内的资源，最后释放 PD |
 | **多 PD** | 用于隔离，不是性能优化 |
 
-!!! note "下一步"
-    有了 Context 和 PD，我们就可以创建其他资源了：
-
-    - **CQ（Completion Queue）** — 网卡写入完成记录的地方
-    - **MR（Memory Region）** — 向网卡注册的内存区域
-    - **QP（Queue Pair）** — 发送和接收请求的队列
-
-    接下来的三章分别深入讲解这些资源。
+!!! note "后续章节"
+    有了 Context 和 PD，程序就可以继续创建 CQ、MR 和 QP。接下来的几章会分别讨论完成队列、内存注册以及请求队列。
