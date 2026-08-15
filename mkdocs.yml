@@ -56,6 +56,15 @@ nav:
       - 2.10 错误完成与异步事件: 02-programming-model/10-error-and-events.md
   - 第三篇：机制探秘:
       - 03-internals/index.md
+      - 3.1 一次 RDMA 操作的完整路径: 03-internals/01-operation-path.md
+      - 3.2 用户态 Verbs、mlx5 Provider 与内核驱动: 03-internals/02-verbs-provider-kernel.md
+      - 3.3 Memory Registration、DMA 与 IOMMU: 03-internals/03-memory-registration-dma-iommu.md
+      - 3.4 mlx5 QP、WQE、CQE 与 Doorbell: 03-internals/04-qp-wqe-cqe-doorbell.md
+      - 3.5 RC 可靠传输机制: 03-internals/05-rc-reliability.md
+      - 3.6 RoCE 网络路径: 03-internals/06-roce-network.md
+      - 3.7 PCIe、NUMA、GPU 拓扑与缓存一致性: 03-internals/07-pcie-numa-cache.md
+      - 3.8 GPUDirect RDMA: 03-internals/08-gpudirect-rdma.md
+      - 3.9 观察与诊断: 03-internals/09-observability-diagnostics.md
   - 第四篇：优化技巧:
       - 04-optimization/index.md
   - 第五篇：实例研究:
