@@ -1,400 +1,95 @@
-# 2.2 Context 与 Protection Domain（PD）
+# 2.2 Context 与 Protection Domain
 
-上一节我们从整体上观察了一个 RDMA 程序的结构。现在开始逐个深入每个核心资源。
+范例在注册内存、创建队列前，先打开 RDMA 设备并分配 PD。本章沿这两步展开。它们把程序后续创建的资源放到正确的设备中，并限定哪些资源可以配合使用。
 
-本章讨论最基础的两个对象：Context 和 Protection Domain（保护域）。Context 是程序访问 RDMA 设备的入口；PD 则把 QP、MR、AH 等本地资源放进同一个访问域中，限制它们之间能否配合使用。
+## 选择设备并打开 Context
 
-本章实验使用 `examples/programming_model/01_device_info.c`。程序从设备列表开始，依次完成设备选择、`ibv_open_device`、设备能力查询、端口状态查询和 GID 查询。这一组动作构成 RDMA 程序初始化阶段的起点；后续 PD、CQ、QP 和 MR 的创建都以打开后的 `ibv_context` 为基础。
+Linux 中一台机器可能有多张 RDMA 网卡。`ibv_get_device_list` 返回当前进程可以使用的设备列表，应用从中选择一个，再用 `ibv_open_device` 得到 `ibv_context`。
 
-```bash
-make -C examples/programming_model
-./examples/programming_model/01_device_info
-./examples/programming_model/01_device_info -d mlx5_0 -p 1 -g 0
-```
-
-输出中的 `phys_port_cnt`、`max_qp`、`max_cqe`、`port state` 和 `gid[0]` 分别来自设备属性、端口属性和 GID 表。它们说明程序已经越过设备枚举阶段，进入了基于 `ibv_context` 的查询阶段。
-
-## 2.2.1 Context 与 PD 的作用
-
-Context 和 PD 是后续资源创建的基础。Context 连接应用与 RDMA 设备，PD 则组织同一设备上下文下的资源访问关系。理解这两个对象后，再看 MR、QP、CQ 的依赖关系会更清楚。
-
-### Context：设备入口
-
-Context 可以看作程序与 RDMA 设备的会话入口：打开文件需要 `FILE*` 或 `fd`，建立网络连接需要 `socket`，使用 RDMA 设备则需要 `ibv_context`。
-
-**Context 与设备的对应关系**：每个 RDMA 设备实例（如 `mlx5_0`、`mlx5_1`）可以被打开为一个设备上下文。每次调用 `ibv_open_device` 都会返回一个独立的 `ibv_context`。同一设备可以被多个进程或线程同时打开，一个设备实例也可能有多个物理端口。通过某个 Context 创建的 PD、CQ、QP、MR 只属于这个设备，不能直接拿到另一张 RDMA 设备上使用；如果程序要使用多张网卡，通常要为每个设备分别创建 Context 及其资源。
-
-通过 Context，程序可以查询设备能力、创建 PD/CQ/QP/MR 等资源，也可以查询端口状态。
-
-Context 本身不是通信通道。实际请求会投递到 QP，完成结果会出现在 CQ；Context 更多承担设备入口和资源创建的角色。
-
-### PD：资源的安全边界
-
-Protection Domain（PD）是 RDMA 本地资源隔离模型的一部分。它实现了一个简单规则：
-
-**只有同一 PD 内的资源才能互相访问。**
-
-具体来说，QP 要访问某个 MR，两者必须在同一个 PD 中；QP 和 AH（Address Handle）也必须在同一个 PD 中；不同 PD 的资源不能直接配合访问。
-
-```mermaid
-flowchart TB
-    CTX["context<br/>（设备入口）"]
-    PD1["PD #1<br/>（安全域 1）"]
-    PD2["PD #2<br/>（安全域 2）"]
-    QP1["QP A"]
-    QP2["QP B"]
-    MR1["MR X"]
-    MR2["MR Y"]
-
-    CTX --> PD1
-    CTX --> PD2
-    PD1 --> QP1
-    PD1 --> MR1
-    PD2 --> QP2
-    PD2 --> MR2
-
-    QP1 -.->|✗ 不能访问| MR2
-    QP2 -.->|✗ 不能访问| MR1
-    QP1 ==>|✓ 可以访问| MR1
-    QP2 ==>|✓ 可以访问| MR2
-
-    style PD1 fill:#e8f5e9
-    style PD2 fill:#fff3e0
-```
-
-图 2-4：PD 作为安全边界限定资源访问关系。
-{: .figure-caption }
-
-可以把 PD 理解为同一设备上下文下的资源分组。它防止"错误的 QP 使用错误的 MR"这类本地资源配置错误。
-
-!!! note "PD 与 Context 的关系"
-    Context 是设备会话入口；PD 是同一个设备上下文下更细粒度的资源访问域。在同一设备内隔离不同资源组（例如控制流和数据流）时，PD 比重新打开设备更合适。
-
-    PD 隔离的是本地资源访问关系，不负责连接认证、租户隔离或控制面权限校验。
-
-    简单来说：**Context 选择设备，PD 组织该设备上的资源访问关系**。
-
-!!! note "PD 不是完整安全方案"
-    PD 能限制 QP、MR、AH 等本地资源是否能配合使用，但它不是用户身份认证机制，也不能替代进程隔离、VF/SR-IOV、IOMMU 或控制面鉴权。
-
-## 2.2.2 程序如何找到并打开设备
-
-实际代码的第一步是获取设备列表。
-
-### 获取设备列表
-
-`ibv_get_device_list` 返回系统上所有 RDMA 设备的列表：
+下面是初始化片段，`device_name` 为已选定的名称，例如 `mlx5_0`，调用方负责处理错误返回：
 
 ```c
-int num_devices;
-struct ibv_device **dev_list = ibv_get_device_list(&num_devices);
-
-if (!dev_list) {
-    perror("Failed to get RDMA devices list");
-    return EXIT_FAILURE;
-}
-
-if (num_devices == 0) {
-    fprintf(stderr, "No RDMA devices found\n");
-    ibv_free_device_list(dev_list);
-    return EXIT_FAILURE;
-}
-```
-
-返回的 `dev_list` 是一个指针数组，以 NULL 结尾。每个元素是一个 `ibv_device`，代表用户态 Verbs 能看到的一个 RDMA 设备实例。
-
-这里有两个细节需要留意。第一，`ibv_get_device_list` 失败时返回 `NULL`；如果系统上没有 RDMA 设备，它可以返回一个非空列表，同时把 `num_devices` 设为 0。因此程序通常要分别处理“调用失败”和“没有设备”两种情况。第二，`ibv_device` 只是设备描述项，后续真正用于查询能力和创建资源的是 `ibv_open_device` 返回的 `ibv_context`。
-
-### 设备长什么样？
-
-常见的设备名格式：
-
-| 设备名 | 含义 |
-|--------|------|
-| `mlx5_0`、`mlx5_1` | NVIDIA/Mellanox ConnectX 与 BlueField 系列（最常见） |
-| `rxe0` | Soft-RoCE/RXE 软件模拟设备（用于开发测试） |
-| `irdma0` | Intel 以太网 RDMA 设备（如 X722、E810 等） |
-| `siw0` | Soft-iWARP 软件模拟设备 |
-
-可以打印所有设备名：
-
-```c
-printf("Found %d RDMA device(s)\n", num_devices);
-for (int i = 0; i < num_devices; i++) {
-    printf("  [%d]: %s\n", i, ibv_get_device_name(dev_list[i]));
-}
-```
-
-### 选择设备
-
-大多数程序选择"第一个可用设备"：
-
-```c
-struct ibv_device *chosen_dev = dev_list[0];
-```
-
-如果机器有多个 RDMA 设备，也可以通过名称选择：
-
-```c
-for (int i = 0; i < num_devices; i++) {
-    if (strcmp(ibv_get_device_name(dev_list[i]), "mlx5_0") == 0) {
-        chosen_dev = dev_list[i];
+int count = 0;
+struct ibv_device **devices = ibv_get_device_list(&count);
+if (!devices) return -1;
+struct ibv_context *ctx = NULL;
+for (int i = 0; i < count; ++i) {
+    if (strcmp(ibv_get_device_name(devices[i]), device_name) == 0) {
+        ctx = ibv_open_device(devices[i]);
         break;
     }
 }
+ibv_free_device_list(devices);
+if (!ctx) return -1;
 ```
 
-!!! note "选择设备是程序配置的一部分"
-    Verbs 可以枚举本机设备，但不会判断哪张卡适合当前连接。生产环境通常通过配置文件、命令行参数或服务发现结果来指定设备、端口和 GID index。
+设备列表用于发现和选择设备，Context 则要保留到依赖它的资源全部释放之后。打开设备成功后可以释放列表。没有设备与设备打开失败是不同情况，完整程序应分别记录，避免把容器映射、权限和驱动问题混在一起。
 
-### 打开设备
+`mlx5_0` 是 Verbs 设备名，`eth0` 是网络接口名，两者不能互换。RoCE 环境下可以通过 `rdma link show` 查看设备端口与网络接口的对应关系。
 
-选定设备后，`ibv_open_device` 创建一个 Context：
+## 查询能力，再选择配置
+
+程序不能假定所有网卡都支持相同队列深度、SGE 数量和原子操作。`ibv_query_device` 查询设备能力；`ibv_query_port` 查询指定端口的当前状态。
 
 ```c
-struct ibv_context *ctx = ibv_open_device(chosen_dev);
-if (!ctx) {
-    perror("Failed to open RDMA device");
-    ibv_free_device_list(dev_list);
-    return EXIT_FAILURE;
-}
-
-// 设备列表已不需要，可以释放
-ibv_free_device_list(dev_list);
+struct ibv_device_attr dev;
+struct ibv_port_attr port;
+int rc = ibv_query_device(ctx, &dev);
+if (rc != 0) return -1;
+rc = ibv_query_port(ctx, 1, &port);
+if (rc != 0) return -1;
+printf("ports=%u max_qp=%d max_cqe=%d\n",
+       dev.phys_port_cnt, dev.max_qp, dev.max_cqe);
 ```
 
-`ibv_open_device` 成功后，程序获得与该设备的会话入口。后续查询设备、创建 CQ、分配 PD 等操作都会从这个 `ctx` 开始。
+这些是局部片段，失败时的完整释放逻辑见配套程序。设备支持的上限只说明能力，不保证在任意资源占用下都能申请到对应数量。真正创建 QP 后，还要看创建接口返回的实际容量。
 
-设备列表在打开目标设备后就可以释放。释放列表并不会使已经打开的 `ibv_context` 失效；但没有打开的 `ibv_device` 指针不应在 `ibv_free_device_list` 之后继续使用。
+| 查询对象 | 初学时重点关注的字段 | 用途 |
+|---|---|---|
+| 设备 | `phys_port_cnt`、`max_qp_wr`、`max_sge`、`max_cqe` | 判断端口和队列能力 |
+| 设备 | `atomic_cap` | 决定是否运行 Atomic 实验 |
+| 端口 | `state`、`link_layer`、`active_mtu` | 确认端口可用和路径配置基础 |
+| 端口地址 | LID、GID 表 | 建立到对端的地址路径 |
 
-## 2.2.3 查询设备能力
+表 2-3：查询能力，再选择配置。
+{: .table-caption }
 
-打开设备后，通常需要查询这个设备支持哪些能力和资源上限。
+端口状态会变化。启动时为 ACTIVE，不代表运行期间永远可用。第二篇末尾会介绍异步事件，第三篇再解释 IB 与 RoCE 地址的区别。
 
-### 查询设备属性
+## PD 约束的是本地资源关系
 
-`ibv_query_device` 返回设备的能力和限制：
-
-```c
-struct ibv_device_attr device_attr;
-if (ibv_query_device(ctx, &device_attr)) {
-    perror("Failed to query device attributes");
-    return EXIT_FAILURE;
-}
-
-printf("Device capabilities:\n");
-printf("  Max QP: %d\n", device_attr.max_qp);
-printf("  Max CQ: %d\n", device_attr.max_cq);
-printf("  Max MR: %d\n", device_attr.max_mr);
-printf("  Max SGE per WR: %d\n", device_attr.max_sge);
-printf("  Max CQ entries: %d\n", device_attr.max_cqe);
-```
-
-这些数字描述资源上限。例如，`max_qp` 表示最多可以创建多少个 Queue Pair，`max_qp_wr` 表示每个 QP 最多可以有多少个未完成的 Work Request，`max_sge` 表示一个 WR 最多可以包含多少个 Scatter/Gather 元素。
-
-这些属性更接近“硬件和驱动支持的上限”，不是当前进程一定能够创建到的剩余资源数量。实际创建 QP、CQ、MR 等对象时，还会受到系统内存、权限、其他进程占用以及驱动策略的影响。因此查询能力用于选择合理参数，不能替代创建调用的错误处理。
-
-!!! note "这些限值很重要"
-    某些硬件（特别是老设备或模拟设备）的资源限值很低。老的 `rxe` 软件模拟设备可能只允许几十个 QP，某些低端或特殊网卡的 `max_sge` 可能只有 1 到 2 个，`max_cqe` 也会限制 CQ 的深度并影响并发请求数。如果程序尝试创建超过设备能力的资源，相关创建调用会失败。查询这些限制是保证程序可移植性的第一步。
-
-### 查询端口状态
-
-RDMA 设备通常有多个端口（物理接口），每个端口独立工作。可以先用 `ibv_devinfo` 命令查看设备有哪些端口及其状态：
-
-```bash
-$ ibv_devinfo
-    transport:            InfiniBand (0)
-    fw_ver:               28.0.1000
-    node_guid:            ...
-    sys_image_guid:       ...
-    phys_port_cnt:        2            # 这个设备有 2 个端口
-    port:                 1
-          state:          PORT_ACTIVE  # 端口 1 处于活跃状态
-          link_layer:     InfiniBand
-    port:                 2
-          state:          PORT_DOWN     # 端口 2 未连接
-```
-
-程序中通过 `ibv_query_port` 查询端口属性：
-```cpp
-struct ibv_port_attr port_attr;
-uint8_t port_num = 1;  // 查询第一个端口
-
-if (ibv_query_port(ctx, port_num, &port_attr)) {
-    perror("Failed to query port attributes");
-    return EXIT_FAILURE;
-}
-
-printf("Port %d state: %s\n", port_num,
-       ibv_port_state_str(port_attr.state));
-printf("  LID: 0x%x\n", port_attr.lid);
-printf("  Active MTU: %d\n", 1 << (port_attr.active_mtu + 7));
-```
-
-端口状态非常重要。在使用端口之前，必须确认它是 `ACTIVE` 的：
-
-```c
-if (port_attr.state != IBV_PORT_ACTIVE) {
-    fprintf(stderr, "Port %d is not ACTIVE (state: %d)\n",
-            port_num, port_attr.state);
-    return EXIT_FAILURE;
-}
-```
-
-端口属性与设备属性不同，很多字段会随链路状态、子网管理器配置或硬件状态变化而变化。程序启动时通常要检查 `state` 和 `link_layer`，运行中如果收到异步端口事件，也应重新确认端口状态。InfiniBand 场景中 LID、P_Key 等字段更常用；RoCE 场景则通常需要关注 GID、GID index 和 GRH 配置。
-
-!!! note "端口不 ACTIVE 可能的原因"
-    端口不 ACTIVE 的原因可能是网线未连接、链路层协商失败、InfiniBand 子网管理器（SM）未配置，或者交换机端口被禁用。排查时通常先看 `ibv_devinfo`、系统日志和交换机端口状态。
-
-## 2.2.4 创建 Protection Domain
-
-有了 Context 和确认了端口状态，就可以创建 PD 了。
-
-### 分配 PD
-
-`ibv_alloc_pd` 在指定 Context 下创建一个新的 PD：
+PD 是 Protection Domain，通常译为保护域。应用调用 `ibv_alloc_pd(ctx)` 创建它，然后把同一个 `pd` 传给 QP 创建和 MR 注册。
 
 ```c
 struct ibv_pd *pd = ibv_alloc_pd(ctx);
 if (!pd) {
-    perror("Failed to allocate protection domain");
-    return EXIT_FAILURE;
+    ibv_close_device(ctx);
+    return -1;
 }
 ```
 
-这个 PD 现在就是后续 QP、MR 等资源的访问域。QP 访问本地 MR 时，两者需要属于同一个 PD。
-同一个 PD 还会被用于创建或关联 AH、SRQ、QP、MR、MW 等资源。实际程序中，如果一个 QP 要使用某个 MR 的 `lkey`，两者应来自同一个 PD；如果把不同 PD 下的对象混用，错误通常会在 WR 完成时以保护错误或操作错误暴露出来。
+当 QP 使用某个本地 MR 的 `lkey` 时，设备会检查相关保护关系。这样可以发现把不属于这个资源组的内存描述用于请求的错误。
 
-### 释放 PD
+PD 是本地设备资源，不需要与另一台机器使用相同编号。两端各自管理自己的 PD，再通过 QP 连接和远端访问凭证协作。一个 QP 可以访问本 PD 中符合权限的多块 MR，一个 MR 也可以被本 PD 中多个 QP 使用。
 
-使用完毕后，用 `ibv_dealloc_pd` 释放 PD：
+最小程序采用一个 PD 已经足够。按模块拆成多个 PD 可以限制资源误用，但同进程代码仍共享进程地址空间，不能把这种分组当成进程或租户安全隔离的完整替代。
 
-```c
-if (ibv_dealloc_pd(pd)) {
-    perror("Failed to deallocate PD");
-}
+## 把创建和释放放在一起看
+
+资源关系决定了释放顺序。只使用 Context 和 PD 时，先 `ibv_dealloc_pd`，再 `ibv_close_device`。加入 QP、MR、CQ 后，要先停止相关通信，消除在途引用，再释放这些资源；QP 引用的 CQ 和 PD 必须保留到 QP 销毁之后。
+
+创建过程中途失败时，清理已经成功创建的资源即可。把句柄初始值设为 `NULL`，并在成功创建后更新，可以让清理函数知道哪些对象实际存在。释放接口也可能失败，不能无条件认定底层内存已经可复用。
+
+配套实验将查询和生命周期拆为两份短程序：
+
+```bash
+make -C examples/programming_model
+./examples/programming_model/01_device_info -d mlx5_0 -p 1
+./examples/programming_model/02_resource_lifecycle -d mlx5_0 -p 1
 ```
 
-!!! note "释放顺序很重要"
-    只有当 PD 内没有其他依赖资源（QP、MR、AH、SRQ 等）时，才能释放 PD。清理时通常先销毁关联的 QP，再注销关联的 MR，最后才释放 PD。
+第一份输出设备能力，第二份创建并销毁 PD、CQ、QP 和 MR，不执行传输。对照输出，先区分“设备允许的上限”和“本次创建返回的容量”。下一章再解释第二份程序中那块已注册内存的含义。
 
-## 2.2.5 一个完整的初始化流程
+## 参考资料
 
-上述步骤可以串联为如下初始化流程：
-
-```c
-struct rdma_context {
-    struct ibv_context *ctx;
-    struct ibv_pd *pd;
-    struct ibv_port_attr port_attr;
-    uint8_t port_num;
-};
-
-int init_rdma_context(struct rdma_context *rc) {
-    int num_devices;
-    struct ibv_device **dev_list;
-    struct ibv_device_attr device_attr;
-    int found_active = 0;
-
-    // 1. 获取设备列表
-    dev_list = ibv_get_device_list(&num_devices);
-    if (!dev_list) {
-        perror("Failed to get RDMA devices");
-        return -1;
-    }
-    if (num_devices == 0) {
-        fprintf(stderr, "No RDMA devices found\n");
-        ibv_free_device_list(dev_list);
-        return -1;
-    }
-
-    // 2. 打开第一个设备
-    rc->ctx = ibv_open_device(dev_list[0]);
-    ibv_free_device_list(dev_list);  // 不再需要列表
-    if (!rc->ctx) {
-        perror("Failed to open device");
-        return -1;
-    }
-
-    if (ibv_query_device(rc->ctx, &device_attr)) {
-        perror("Failed to query device");
-        ibv_close_device(rc->ctx);
-        return -1;
-    }
-
-    // 3. 查找第一个 ACTIVE 的端口
-    for (rc->port_num = 1; rc->port_num <= device_attr.phys_port_cnt; rc->port_num++) {
-        if (ibv_query_port(rc->ctx, rc->port_num, &rc->port_attr))
-            continue;
-        if (rc->port_attr.state == IBV_PORT_ACTIVE) {
-            found_active = 1;
-            break;
-        }
-    }
-
-    if (!found_active) {
-        fprintf(stderr, "No active port found\n");
-        ibv_close_device(rc->ctx);
-        return -1;
-    }
-
-    // 4. 创建 PD
-    rc->pd = ibv_alloc_pd(rc->ctx);
-    if (!rc->pd) {
-        perror("Failed to allocate PD");
-        ibv_close_device(rc->ctx);
-        return -1;
-    }
-
-    printf("Context and PD initialized on port %d\n", rc->port_num);
-    return 0;
-}
-```
-
-这个函数展示了 RDMA 程序常见的初始化顺序：找到设备、打开设备、确认端口、创建 PD。
-
-## 2.2.6 何时需要多个 PD？
-
-大多数程序只需要一个 PD。但某些场景下，多个 PD 有其价值：
-
-| 场景 | 原因 |
-|------|------|
-| **控制流与数据流分离** | 为控制和数据创建不同 PD，防止数据 QP 意外访问控制 MR |
-| **进程内资源分组** | 在同一进程内为不同连接或模块创建独立资源组 |
-| **错误边界更清楚** | 错误 QP 更难误用不属于同一 PD 的 MR |
-
-示例：
-
-```c
-// 为控制和数据创建不同的 PD
-struct ibv_pd *pd_control = ibv_alloc_pd(ctx);
-struct ibv_pd *pd_data = ibv_alloc_pd(ctx);
-
-// 控制流的资源
-struct ibv_qp *qp_ctrl = create_qp(pd_control, ...);
-struct ibv_mr *mr_ctrl = ibv_reg_mr(pd_control, ctrl_buf, size, ...);
-
-// 数据流的资源
-struct ibv_qp *qp_data = create_qp(pd_data, ...);
-struct ibv_mr *mr_data = ibv_reg_mr(pd_data, data_buf, size, ...);
-
-// 现在 qp_data 只能访问 mr_data，不能访问 mr_ctrl
-```
-
-!!! note "多 PD 是隔离手段，不是性能优化"
-    多 PD 会增加管理复杂度，通常不会提升性能。只有确实需要资源隔离时才使用。
-
-## 2.2.7 本章小结
-
-Context 是应用进入某个 RDMA 设备的入口，设备能力查询、端口查询以及后续资源创建都从它开始。设备列表只用于选择设备，打开设备后即可释放；已经得到的 `ibv_context` 不受释放设备列表影响。
-
-PD 则是同一 Context 下的资源访问域。QP、MR、AH 等对象只有处在匹配的 PD 中，才能按照 Verbs 规则配合使用。多个 PD 可以用于资源隔离，但它不是性能优化手段。销毁资源时，也应先释放 PD 内的 QP、MR、AH 等对象，最后再释放 PD。
-
-!!! note "后续章节"
-    有了 Context 和 PD，程序就可以继续创建 CQ、MR 和 QP。接下来的几章会分别讨论完成队列、内存注册以及请求队列。
-
-## 延伸阅读
-
-- [rdma-core 手册页：ibv_open_device(3)、ibv_alloc_pd(3)、ibv_query_device(3)、ibv_query_port(3)](https://man.archlinux.org/man/extra/rdma-core/)：本章涉及的函数原型、返回值和错误语义。
-- Linux 内核文档 [RDMA Core 与 uverbs](https://docs.kernel.org/infiniband/)：说明 `ibv_get_device_list`、`ibv_open_device` 在内核侧对应的设备枚举与打开流程。
-- 本章实验程序为 `examples/programming_model/01_device_info.c`，其输出字段（`phys_port_cnt`、`max_qp`、`max_cqe`、端口状态、GID）可直接与 `ibv_devinfo` 对照。
+[ibv_open_device](https://github.com/linux-rdma/rdma-core/blob/master/libibverbs/man/ibv_open_device.3)、[ibv_alloc_pd](https://github.com/linux-rdma/rdma-core/blob/master/libibverbs/man/ibv_alloc_pd.3)和[ibv_query_device](https://github.com/linux-rdma/rdma-core/blob/master/libibverbs/man/ibv_query_device.3)手册给出接口及能力字段定义。

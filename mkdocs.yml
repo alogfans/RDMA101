@@ -5,6 +5,7 @@ repo_url: https://github.com/alogfans/RDMA101
 repo_name: alogfans/RDMA101
 theme:
   name: material
+  language: zh
   logo: assets/rdma101.svg
   favicon: assets/rdma101.svg
   features:
@@ -13,6 +14,13 @@ theme:
     - navigation.sections
     - navigation.top
     - toc.follow
+    - search.suggest
+    - search.highlight
+plugins:
+  - search:
+      lang:
+        - zh
+        - en
 extra_css:
   - stylesheets/extra.css
 copyright: >
@@ -38,11 +46,13 @@ markdown_extensions:
           format: !!python/name:pymdownx.superfences.fence_code_format
 nav:
   - 首页: index.md
+  - 术语与问题索引: reference.md
+  - 配套实验与测试: labs.md
   - 第一篇：快速入门:
       - 01-introduction/index.md
       - 1.1 从 TCP 到 RDMA: 01-introduction/01-tcp-to-rdma.md
-      - 1.2 第一个 RDMA 程序: 01-introduction/02-environment-and-first-program.md
-  - 第二篇：编程模型:
+      - 1.2 环境配置与第一个 RDMA 程序: 01-introduction/02-environment-and-first-program.md
+  - 第二篇：RDMA 编程模型:
       - 02-programming-model/index.md
       - 2.1 RDMA WRITE 范例解读: 02-programming-model/01-first-rdma-program.md
       - 2.2 Context 与 Protection Domain: 02-programming-model/02-context-and-pd.md
@@ -52,20 +62,35 @@ nav:
       - 2.6 SEND 与 RECV: 02-programming-model/06-send-recv.md
       - 2.7 RDMA WRITE: 02-programming-model/07-rdma-write.md
       - 2.8 RDMA READ: 02-programming-model/08-rdma-read.md
-      - 2.9 Atomic 操作: 02-programming-model/09-atomic.md
+      - 2.9 Atomic 操作（选读）: 02-programming-model/09-atomic.md
       - 2.10 错误完成与异步事件: 02-programming-model/10-error-and-events.md
-  - 第三篇：内部机制:
+  - 第三篇：RDMA 内部机制:
       - 03-internals/index.md
-      - 3.1 WRITE 路径: 03-internals/01-operation-path.md
-      - 3.2 Verbs 分层: 03-internals/02-verbs-provider-kernel.md
-      - 3.3 内存注册: 03-internals/03-memory-registration-dma-iommu.md
-      - 3.4 队列与门铃: 03-internals/04-qp-wqe-cqe-doorbell.md
-      - 3.5 RC 可靠性: 03-internals/05-rc-reliability.md
-      - 3.6 RoCE 路径: 03-internals/06-roce-network.md
-      - 3.7 主机拓扑: 03-internals/07-pcie-numa-cache.md
-      - 3.8 GPUDirect RDMA: 03-internals/08-gpudirect-rdma.md
-      - 3.9 诊断: 03-internals/09-observability-diagnostics.md
-  - 第四篇：优化技巧:
+      - 3.1 一次 WRITE 的执行过程: 03-internals/01-operation-path.md
+      - 3.2 Verbs、Provider 与内核: 03-internals/02-verbs-provider-kernel.md
+      - 3.3 内存注册、DMA 与地址转换: 03-internals/03-memory-registration-dma-iommu.md
+      - 3.4 WQE、CQE 与 Doorbell: 03-internals/04-qp-wqe-cqe-doorbell.md
+      - 3.5 RC 可靠传输: 03-internals/05-rc-reliability.md
+      - 3.6 RoCE 网络基础: 03-internals/06-roce-network.md
+      - 3.7 PCIe、NUMA 与主机拓扑: 03-internals/07-pcie-numa-cache.md
+  - 第四篇：性能优化与工程实践:
       - 04-optimization/index.md
-  - 第五篇：实例研究:
-      - 05-case-studies/index.md
+      - 4.1 RDMA 性能测量基础: 04-optimization/01-measurement.md
+      - 4.2 批处理、流水线与资源复用: 04-optimization/02-batching-pipeline.md
+      - 4.3 异步传输与并发控制: 04-optimization/03-async-backpressure.md
+      - 4.4 连接管理与元数据: 04-optimization/04-connections-metadata.md
+      - 4.5 超时与故障恢复: 04-optimization/05-failure-recovery.md
+      - 4.6 可观测性与问题诊断: 04-optimization/06-diagnostics.md
+  - 第五篇：GPU 与 AI 数据传输:
+      - 05-gpu-data/index.md
+      - 5.1 GPU 内存与 GPUDirect RDMA: 05-gpu-data/01-gpudirect.md
+      - 5.2 Tensor 布局与缓冲区管理: 05-gpu-data/02-tensor-memory.md
+      - 5.3 GPU 执行顺序与通信同步: 05-gpu-data/03-synchronization.md
+      - 5.4 多 GPU、多网卡与传输路径: 05-gpu-data/04-topology-transports.md
+  - 第六篇：传输引擎与 AI 系统案例:
+      - 06-case-studies/index.md
+      - 6.1 Mooncake Transfer Engine 的设计与使用: 06-case-studies/01-transfer-engine.md
+      - 6.2 PD 分离中的 KV Cache 传输: 06-case-studies/02-pd-disaggregation.md
+      - 6.3 分层 KV Cache 与共享缓存池: 06-case-studies/03-kv-cache-store.md
+      - 6.4 模型权重的加载与同步: 06-case-studies/04-weight-transfer.md
+      - 6.5 多模态与训练流水线: 06-case-studies/05-pipeline-transfer.md

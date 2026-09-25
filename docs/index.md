@@ -1,48 +1,51 @@
 # RDMA101
 
-从第一个 RDMA 程序，到真实系统里的数据路径。
+假设要把一台机器上的字符串写进另一台机器的内存。使用 TCP 时，发送方把数据交给 socket，接收方再读出来。使用 RDMA WRITE 时，接收方先准备并授权一块内存，发送方就可以让网卡把数据写到那里。
 
-[入门](01-introduction/index.md){ .md-button .md-button--primary }
-[查看 GitHub](https://github.com/alogfans/RDMA101){ .md-button }
+这减少了数据搬运时的 CPU 参与，也把一些工作交给了应用：内存何时可用，谁有权访问，什么时候传输完成。RDMA101 从这个小程序开始，逐步走到并发传输、GPU 数据和 AI 系统。
 
-RDMA101 是一套面向工程实践与系统研究的 RDMA 教程。课程从 Mooncake Transfer Engine 的实际需求出发，但讨论范围不限于 Mooncake TE。它希望帮助读者从可运行的示例开始，逐步理解 RDMA 的编程模型、内部机制、性能边界和系统设计取舍。
+[开始阅读](01-introduction/01-tcp-to-rdma.md){ .md-button .md-button--primary }
+[按术语或问题查找](reference.md){ .md-button }
 
-RDMA 与传统 TCP socket 编程差异很大。RDMA 程序不仅要描述本地和远端缓冲区，还要处理内存注册、访问权限、队列、异步完成以及连接元数据。在真实环境中，驱动、网卡、PCIe、NUMA、交换机和 RoCE 配置也会影响结果。因此，只读 API 手册或只跑通示例程序，通常不足以支撑部署、排障、优化和系统开发。
+## 阅读顺序
 
-课程按由浅入深的顺序组织：先运行一个最小 RDMA 程序，再解释其背后的编程模型；随后追踪一次 RDMA 请求在系统内部的执行路径，讨论常见优化方法，最后回到真实系统案例。
+教程需要基本的 C/C++ 和 Linux 使用经验。六篇共 34 章，前三篇建立编程和原理基础，后面三篇将程序扩展到持续运行的传输服务及 AI 应用。
 
-项目源码、示例程序和文档构建配置托管在 [GitHub: alogfans/RDMA101](https://github.com/alogfans/RDMA101)。页面右上角的 GitHub 入口可进入项目仓库；涉及示例代码的正文，会在相应位置标注源码链接。
+| 篇 | 内容 |
+|---|---|
+| [一：快速入门](01-introduction/index.md) | 从 TCP 认识 RDMA，检查环境，运行一次远端写入。 |
+| [二：编程模型](02-programming-model/index.md) | 对照示例学习资源、请求和完成，再比较 SEND、WRITE、READ 与 Atomic。 |
+| [三：内部机制](03-internals/index.md) | 追踪驱动与网卡如何执行请求，理解注册、队列、RC、RoCE 和主机拓扑。 |
+| [四：性能优化与工程实践](04-optimization/index.md) | 从测量到批处理和异步并发，继续处理连接、超时、恢复与诊断。 |
+| [五：GPU 与 AI 数据传输](05-gpu-data/index.md) | 补充显存注册、Tensor 布局、GPU 同步和多设备路径所需的知识。 |
+| [六：传输引擎与 AI 系统案例](06-case-studies/index.md) | 使用 Mooncake TE，再讨论 KV 缓存、权重和流水线中的传输协议。 |
 
-## 课程路线
+表 0-1：全书六篇的阅读顺序。
+{: .table-caption }
 
-- [第一篇：快速入门](01-introduction/index.md)
-  搭建实验环境，识别 RDMA 设备，运行基础工具，并完成一个最小 RDMA Hello World。
-- [第二篇：编程模型](02-programming-model/index.md)
-  解释 RDMA 程序的基本结构，重点讨论内存注册、队列、远端地址、访问凭证、completion 和连接信息之间的关系。
-- [第三篇：机制探秘](03-internals/index.md)
-  追踪一次 RDMA 请求在应用、用户态库、驱动、网卡、PCIe、NUMA 和 RoCE 网络中的执行过程。
-- [第四篇：优化技巧](04-optimization/index.md)
-  讨论 RDMA 性能优化中的常见机制、适用条件和副作用，包括 batching、inline data、queue depth、MR cache 和 polling 等主题。
-- [第五篇：实例研究](05-case-studies/index.md)
-  分析 Mooncake TE 以及其他 RDMA 系统如何组织数据路径、控制路径、内存管理、故障处理和性能优化。
+初次接触 RDMA，可以顺序阅读，第二篇的 Atomic 暂作选读。已有 Verbs 经验的读者可从第四篇开始，按需回查原理。面向 AI Infra 的读者在理解注册、异步完成与主机拓扑后，再进入第五、六篇。
 
-若目标是尽快使用 Mooncake TE，可优先阅读第一篇和第二篇。若需要排查性能和稳定性问题，第三篇和第四篇更关键。若希望参与底层开发或开展系统研究，建议按顺序完成全部五篇。
+## 实验与查阅
 
-## 读者对象
+基础实验使用仓库中的 C 程序。没有 RDMA 网卡时，可用 RXE 学习接口和通信流程；性能结论需要在实际硬件上测量。GPU 章节包含布局实验和同步片段，完整直传实验需要相应设备与驱动。TE 的首次实验采用 TCP 后端，便于先理解接口。
 
-本课程适合希望使用 Mooncake TE 的工程人员、参与 RDMA 系统开发的开发者、需要处理 RDMA/RoCE 问题的运维和系统工程人员，以及研究分布式系统、分布式存储、远程内存和 AI 基础设施的学生与研究人员。
+| 当前问题 | 阅读位置 |
+|---|---|
+| 系统是否具备运行 RDMA 的条件？ | [设备检查与首次测试](01-introduction/02-environment-and-first-program.md#environment) |
+| MR、QP、CQ 分别做什么？ | [示例中的资源关系](02-programming-model/01-first-rdma-program.md#resources) |
+| 投递成功后能否立即改写 buffer？ | [完成处理与缓冲区复用](02-programming-model/05-cq.md#completion) |
+| WRITE 怎样通知远端应用？ | [WRITE 与远端通知](02-programming-model/07-rdma-write.md#notification) |
+| GID index 应该填多少？ | [GID 与网卡的对应关系](03-internals/06-roce-network.md#gid-config) |
+| 带宽低、请求停滞或超时怎样查？ | [测量方法](04-optimization/01-measurement.md)、[按现象排查](04-optimization/06-diagnostics.md#symptoms) |
+| RDMA 成功了，GPU 为什么仍读到旧数据？ | [GPU 同步](05-gpu-data/03-synchronization.md#gpu-sync) |
+| TE 帮应用做什么，上层还要做什么？ | [TE 设计与使用](06-case-studies/01-transfer-engine.md) |
 
-读者应具备基本的 C/C++ 编程能力和 Linux 使用经验。本课程不要求读者事先具备网络开发经验。
+表 0-2：实验与查阅。
+{: .table-caption }
 
-## 学习成果
+完整程序的命令、预期输出及检查方法见[配套实验与测试](labs.md)。也可以在仓库根目录执行 `make -C examples check`，分别查看通过、跳过和失败的项目。
 
-完成课程后，读者应具备以下能力：
-
-- 判断运行环境是否满足 RDMA 传输的基本要求，使用常见工具查看 RDMA 设备、端口、GID、链路和传输状态，并完成基本连通性与性能测试；
-- 理解 RDMA Verbs API 的核心编程模型，掌握 MR、QP、CQ、WR、completion 等关键概念，并能够理解 Mooncake TE 等典型系统中的 RDMA 执行逻辑；
-- 掌握常见 RDMA 调优技术，理解 batching、inline data、polling/interrupt 等方法的适用条件和副作用；
-- 识别常见故障表现，理解连接失败、带宽异常、延迟抖动、QP 状态异常等问题的可能来源，并掌握基本调试原则；
-- 建立严肃基准测试的方法，能够设计可复现实验，并对性能结果作出有边界的解释。
+项目源于 Mooncake Transfer Engine 的开发实践。文档和示例源码位于 [GitHub 仓库](https://github.com/alogfans/RDMA101)，示例命令默认从仓库根目录执行。
 
 ## 贡献
 

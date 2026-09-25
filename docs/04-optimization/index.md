@@ -1,28 +1,21 @@
-# 第四篇：优化技巧
+# 第四篇：性能优化与工程实践
 
-本篇讨论 RDMA 程序和系统中的常见优化技术。优化不是简单地调大参数，也不是追求单次 benchmark 的最高数字；它需要同时理解 workload、队列深度、内存注册、CPU polling、NUMA、网卡能力和网络配置。
+一次 WRITE 正确完成，并不意味着程序可以持续处理大量请求。增加并发以后，等待时间、队列容量、内存复用和连接管理都会影响结果。
 
-## 学习目标
+本篇从测量开始，每次给已有程序增加一项能力。正常传输稳定以后，再通过受控故障验证超时和恢复。实验思路与局部代码用于解释机制；完整服务还需要自己的并发模型和业务协议。
 
-完成本篇后，读者应当能够：
+## 阅读顺序
 
-- 解释 batching、signaled/unsignaled WR 与 completion moderation 对吞吐和延迟的影响；
-- 判断 inline data、消息大小与延迟之间的权衡，以及何时适合使用 inline；
-- 说明 queue depth、多 QP、多 CQ 与线程模型如何决定并发窗口和 CPU 利用率；
-- 理解 MR cache、内存池与注册开销的关系，并设计避免热路径注册的方案；
-- 比较 polling、interrupt 与混合模式在 CPU 占用和延迟上的取舍，并考虑 CPU 亲和性与 NUMA；
-- 设计可复现的基准测试，识别测量误差来源，并给出有边界的性能解释。
+| 章节 | 从本章理解什么 |
+|---|---|
+| [4.1 RDMA 性能测量基础](01-measurement.md) | 区分延迟、有效字节带宽和 CPU 成本，建立可重复的基线。 |
+| [4.2 批处理、流水线与资源复用](02-batching-pipeline.md) | 从单请求扩展到流水线，比较批处理和资源复用。 |
+| [4.3 异步传输与并发控制](03-async-backpressure.md) | 安排提交与完成线程，限制排队和在途资源。 |
+| [4.4 连接管理与元数据](04-connections-metadata.md) | 管理多个对端，识别重启后已经失效的地址与权限。 |
+| [4.5 超时与故障恢复](05-failure-recovery.md) | 区分失败和结果未知，处理迟到完成与安全回收。 |
+| [4.6 可观测性与问题诊断](06-diagnostics.md) | 结合请求日志、线程状态和设备计数器定位问题。 |
 
-## 计划内容
+表 4-6：性能优化与工程实践篇的阅读顺序。
+{: .table-caption }
 
-本篇后续章节将围绕以下主题展开：
-
-- batching、signaled/unsignaled WR 和 completion moderation；
-- inline data、message size 和延迟；
-- queue depth、多 QP、多 CQ 和线程模型；
-- MR cache、内存池和注册开销；
-- polling、interrupt、CPU 亲和性和 NUMA；
-- 基准测试中的可复现性和误差来源。
-
-!!! note "章节状态"
-    本篇目前是主题预览。各主题的详细章节正在编写中；读者可以先结合第二篇的编程模型和第三篇的机制，自行用 `perftest` 与示例程序验证其中的基本结论。
+正在排障时，可以直接进入[诊断章节](06-diagnostics.md#symptoms)，再回查相关原理。Mooncake 的 Issue 和 PR 作为各章后的工程案例，用来检验前文的规则是否覆盖真实情况。学习 AI 数据传输则继续阅读[第五篇](../05-gpu-data/index.md)。

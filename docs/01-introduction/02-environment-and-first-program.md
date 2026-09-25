@@ -1,257 +1,144 @@
 # 1.2 环境配置与第一个 RDMA 程序
 
-上一章介绍了 RDMA 与 TCP socket 的核心区别。本章进入实践部分：先检查 RDMA 环境并运行基础测试，再运行一个最小化的 RDMA WRITE 程序，观察“把数据写入远端内存”的基本效果。
+上一章描述了一次远端写入。本章把它变成可以观察的结果：client 发送字符串，server 从自己的缓冲区中打印出相同内容。先运行现成工具，再运行示例，后续读代码时就有了明确的参照。
 
-## 1.2.1 RDMA 环境配置与设备检查
+所有命令从仓库根目录执行。示例设备名为 `mlx5_0`，server 地址为 `10.10.10.3`，运行时应换成实际值。两端设备名和 GID index 不要求相同。
 
-在开始写 RDMA 程序之前，需要确认环境是否就绪。
+## 准备实验环境 {#environment}
 
-最好的实验条件是两台带 RDMA 网卡的服务器；如果暂时没有真实网卡，也可以用 Soft-RoCE/RXE 在普通以太网上模拟一个 RDMA 设备——这对于学习 API 和通信流程已经足够。
+两台网络互通、装有 RDMA 网卡的 Linux 服务器最方便。网卡可以工作在 InfiniBand 网络，也可以使用以太网上的 RoCE。应用仍使用 Verbs 接口，但连接时采用的地址和网络配置有所不同。
 
-环境准备分为三步：选择实验环境，安装必要软件，确认系统能看到 RDMA 设备。更具体的对象模型和性能调优将在后续篇章展开。
-
-### 真实网卡：InfiniBand 与 RoCE
-
-真实 RDMA 网卡通常工作在两类网络上：**InfiniBand** 和 **RoCE**。
-
-- **InfiniBand**：专用高性能网络，常见于 Mellanox/NVIDIA 的整套硬件和软件环境。
-- **RoCE**（RDMA over Converged Ethernet）：运行在以太网上，其中 RoCEv2 是数据中心里常见的形态。
-
-二者底层网络不同，但应用通常使用同一套 RDMA 编程接口和工具。本章后续使用的检查命令和测试工具，对这两类环境都适用。
-
-!!! note "软件安装"
-    Linux 上常用的基础软件来自 `rdma-core`。如果使用 Mellanox/NVIDIA 网卡，在安装厂商驱动及配套软件后，这些基础软件通常已经安装好了。
-
-### 软件模拟：Soft-RoCE/RXE
-
-没有真实 RDMA 网卡时，可以使用 Soft-RoCE（RXE）。RXE 是 Linux 内核提供的一个功能，支持在普通以太网接口上模拟一个 RDMA 设备。它的价值在于门槛低：一台普通 Linux 机器就可以完成基本 RDMA 编程实验。
-
-!!! warning "RXE 适合学习，不代表真实性能"
-    RXE 可以用来学习 API 和通信流程，但不能代表真实网卡的性能，也不适合做严肃的性能测试。
-
-配置 RXE 前，先选择一个已经能通信的普通网卡。以下命令以 `eth0` 为例：
-
-**1. 检查网卡状态：**
-
-```bash
-ip link show eth0
-ip addr show eth0
-```
-
-**2. 加载 RXE 模块并创建设备**（正常情况下没有回显）：
-
-```bash
-sudo modprobe rdma_rxe
-sudo rdma link add rxe0 type rxe netdev eth0
-```
-
-**预期结果**：运行 `ibv_devices` 后应该能看到 `rxe0` 设备。
-
-如果需要删除 RXE 设备，可以执行：
-
-```bash
-sudo rdma link delete rxe0
-```
-
-### 第一次环境验证
-
-环境准备完成后，我们需要确认三件事：设备存在、端口正常、能够传输数据。
-
-验证顺序如下：
-
-1. 使用 `ibv_devices` 查看 RDMA 设备列表；
-2. 使用 `ibv_devinfo` 查看设备和端口参数；
-3. 使用 `perftest` 跑一次基础传输。
-
-本节只确认环境可用，不讨论性能优化。
-
----
-
-**步骤 1：查看设备列表**
-
-`ibv_devices` 用于枚举用户态 Verbs 能看到的 RDMA 设备：
+用户态库及设备工具来自 rdma-core，带宽工具来自 perftest。编译示例还需要 C 编译器、Make 和 libibverbs 开发头文件。通过发行版或已有厂商软件环境准备这些依赖后，先执行：
 
 ```bash
 ibv_devices
-```
-
-**预期输出**（RoCE 测试机示例）：
-
-```text
-    device          	   node GUID
-    ------          	----------------
-    mlx5_0          	0000********000f
-    mlx5_1          	0000********0006
-```
-
-**判定标准**：输出中至少有一个设备。真实网卡通常显示为 `mlx5_0`、`mlx5_1`；Soft-RoCE 设备显示为 `rxe0`。
-
----
-
-**步骤 2：查看设备参数**
-
-`ibv_devinfo` 用于查看设备和端口的详细信息：
-
-```bash
 ibv_devinfo -d mlx5_0
 ```
 
-**预期输出**（片段）：
+第一条命令列出当前进程可见的 RDMA 设备。第二条命令查询所选设备，重点看端口的 `state`、`link_layer` 和 `active_mtu`。下面是字段示意，具体值随设备变化：
 
 ```text
-hca_id:	mlx5_0
-	transport:			InfiniBand (0)
-	fw_ver:				28.39.3674
-		...
-		port:	1
-			state:			PORT_ACTIVE (4)
-			max_mtu:		4096 (5)
-			link_layer:		Ethernet
+hca_id: mlx5_0
+    port: 1
+        state: PORT_ACTIVE (4)
+        active_mtu: 4096 (5)
+        link_layer: Ethernet
 ```
 
-**判定标准**：`state` 应为 `PORT_ACTIVE`，`link_layer` 显示 `Ethernet`（RoCE）或 `InfiniBand`。
+`Ethernet` 表示这里使用以太网链路；不能只凭输出顶部的 `transport: InfiniBand` 判断是 IB 网络。端口 ACTIVE 是后续传输的前提之一，实际连通性还要用工具验证。容器中还应确认 RDMA 设备可见、驱动库可用，并检查 `ulimit -l` 所显示的锁定内存限制。
 
----
+### 没有 RDMA 网卡时使用 RXE
 
-**步骤 3：第一次传输测试**
+Soft-RoCE（RXE）在普通以太网上提供软件 RDMA 设备，适合观察 API、队列和完成行为。它的数据路径在软件中执行，测出的吞吐和 CPU 开销不能代表硬件 RDMA。
 
-`perftest` 提供了一组常用 RDMA 测试程序。第一次测试我们选择 `ib_write_bw`，验证两端能否完成一次 RDMA WRITE 带宽测试。
+选择一个已经能与对端通信的接口，例如 `eth0`：
 
-**server 端先启动**（不带 server IP）：
+```bash
+ip addr show eth0
+sudo modprobe rdma_rxe
+sudo rdma link add rxe0 type rxe netdev eth0
+ibv_devices
+ibv_devinfo -d rxe0
+```
+
+内核需要包含 RXE 支持，容器还可能需要由宿主机配置设备。如果创建成功，设备列表中会出现 `rxe0`。后面的命令将 `mlx5_0` 换成它即可。实验结束且没有程序使用该设备时，可以用 `sudo rdma link delete rxe0` 删除。
+
+## 用 perftest 验证实际传输
+
+server 先启动，不带 server IP：
 
 ```bash
 ib_write_bw -d mlx5_0
 ```
 
-**client 端后启动**（指定 server IP）：
+client 再连接 server：
 
 ```bash
-ib_write_bw -d mlx5_0 10.10.0.3
+ib_write_bw -d mlx5_0 10.10.10.3
 ```
 
-!!! note "首次测试使用默认参数"
-    第一次运行时可以使用 `ib_write_bw` 的默认选择，让程序自己确定端口号和 GID index。只有在默认选择失败时，才需要显式指定这些参数。
+首次运行使用工具默认参数，让工具选择端口及地址条目。默认选择失败时，再根据实际端口和 GID 表显式指定。两端 perftest 版本及测试选项应匹配。
 
-**预期输出**（client 端，片段）：
+正常结束时，工具会输出消息大小、迭代次数、带宽和消息速率。此时先确认测试结束且没有传输错误，并保存两端完整输出。这里的带宽没有统一达标值；消息大小、并发、网卡速率及主机拓扑都会影响它。[第四篇](../04-optimization/01-measurement.md)再解释怎样设计性能实验。
 
-```text
----------------------------------------------------------------------------------------
-                    RDMA_Write BW Test
-...
----------------------------------------------------------------------------------------
- #bytes     #iterations    BW peak[MB/sec]    BW average[MB/sec]   MsgRate[Mpps]
- 65536      5000             44326.24            44276.64                  0.708426
----------------------------------------------------------------------------------------
-```
+如果 TCP 能连上而 RDMA 操作超时，可以先对照两端工具输出中的设备、端口和 GID。控制连接可达，只证明控制通道能够工作，不能代替数据路径验证。
 
-**判定标准**：测试正常完成，最后一行显示带宽和消息速率数值。
+## 编译并运行 WRITE 示例
 
-环境检查完成！下一节，我们运行一个最小化的 RDMA 程序。
-
-## 1.2.2 单边 RDMA WRITE 样例
-
-本节通过一个最小程序观察单边 RDMA 的基本结构。样例展示的核心现象是：client 可以把数据写入 server 已注册并授权的内存，server CPU 不参与这次数据搬运。
-
-样例放在 `examples/one_sided_write/` 目录下，源码可在 [GitHub](https://github.com/alogfans/RDMA101/tree/main/examples/one_sided_write) 查看。
-
-### 程序做了什么？
-
-程序流程如下：
-
-```mermaid
-sequenceDiagram
-    participant Client
-    participant Server
-    participant NIC as RDMA NIC
-
-    Client->>Server: TCP 交换 QP 信息、addr、rkey
-    Client->>NIC: post RDMA WRITE
-    NIC->>Server: 写入已注册 buffer
-    NIC->>Client: 写入完成
-    Client->>Server: TCP 完成通知
-    Server->>Server: 打印 buffer
-```
-
-图 1-4：单边 RDMA WRITE 中控制信息交换与远端内存写入。
-{: .figure-caption }
-
-**关键步骤：**
-
-1. **注册内存**：server 和 client 都注册本地内存，告诉 RDMA 网卡哪些内存区域可以直接访问。
-2. **交换元数据**：双方通过 TCP 交换 QP 信息、buffer 地址和 `rkey`。
-3. **发起写入**：client 使用 `IBV_WR_RDMA_WRITE` 写入 server 的远端内存——这一步不需要 server CPU 参与。
-4. **验证结果**：server 不调用 `recv` 接收这段数据，只在 client 完成写入后查看自己的 buffer。
-
-### 如何运行？
-
-**编译：**
+源码位于 `examples/one_sided_write/one_sided_write.c`。程序用 TCP 交换连接信息，字符串本身由 RDMA WRITE 搬运：
 
 ```bash
 make -C examples/one_sided_write
 ```
 
-**运行：**server 端先启动：
+server 先启动：
 
 ```bash
 ./examples/one_sided_write/one_sided_write --server -d mlx5_0
 ```
 
-client 端后启动，并指定 server IP：
+client 随后启动：
 
 ```bash
 ./examples/one_sided_write/one_sided_write --client 10.10.10.3 -d mlx5_0 \
   --message "hello one-sided rdma"
 ```
 
-!!! note "GID index 问题"
-    如果使用 RoCE/RXE 且默认 GID 选择不能工作，可以参考 perftest 输出，显式指定 GID index：
-    ```bash
-    ./examples/one_sided_write/one_sided_write --server -d mlx5_0 --gid-index 3
-    ./examples/one_sided_write/one_sided_write --client 10.10.10.3 -d mlx5_0 --gid-index 3
-    ```
+示例默认 GID index 为 0，没有实现复杂的地址自动选择。若 perftest 选择了其他可用条目，应将示例的 `--gid-index` 设置为本机对应值，例如：
 
-### 应该看到什么
+```bash
+./examples/one_sided_write/one_sided_write --server -d mlx5_0 --gid-index 3
+```
 
-**client 端输出：**
+client 也需要按它自己的 GID 表设置。编号的含义和查询方法见 [RoCE 网络基础](../03-internals/06-roce-network.md#gid-config)。
+
+## 解释两端输出
+
+上述字符串包含结尾的 `\0`，共写入 21 字节。正常路径的输出为：
 
 ```text
 client: RDMA WRITE completed, wrote 21 bytes
-```
-
-**server 端输出：**
-
-```text
 server: buffer after RDMA WRITE: "hello one-sided rdma"
 ```
 
-**判定标准**：两端都显示预期输出，server 的 buffer 中出现了 client 写入的内容。
+这两行来自不同进程。client 先等到 WRITE 的成功完成，再经 TCP 发送一个完成标记。server 收到标记后，才打印自己的内存。
 
-### 小结
+```mermaid
+sequenceDiagram
+    participant C as client
+    participant S as server
+    Note over C,S: 各自创建资源，TCP 交换连接和内存信息
+    C->>S: RDMA WRITE 搬运字符串
+    C->>C: 检查成功完成
+    C->>S: TCP 完成标记
+    S->>S: 打印缓冲区
+```
 
-这个样例展示了 RDMA 的核心特点：
+图 1-3：示例中的写入、完成与 TCP 通知。
+{: .figure-caption }
 
-1. **One-sided 操作**：client 直接写入远端内存，server CPU 不参与数据搬运。
-2. **直接内存访问**：数据直接写入 server 的注册内存，不需要经过传统的 socket recv/send。
-3. **控制面与数据面分离**：使用 TCP 交换元数据（控制面），使用 RDMA 传输数据（数据面）。
+server 没有为字符串调用 RDMA RECV。TCP 完成标记只告诉它何时可以查看数据，标记本身没有携带这段字符串。
 
-!!! note "RDMA WRITE 不会自动通知远端应用"
-    数据搬运由 client 发起，写入 server 已授权的内存；server 的 CPU 不参与这次数据复制，也不会因为 RDMA WRITE 自动得到一条应用层消息。样例中最后仍然用 TCP 发了一个很小的完成通知，这是为了让 server 知道何时打印 buffer。真实系统通常也需要类似的控制面协议来管理元数据、权限、完成通知和错误处理。
+可以先只改变 `--message`，重新启动两端，确认 server 输出随之改变。再对照源码中的 `strlen(message) + 1`，解释传输长度为何比可见字符数多一。暂时保持其余逻辑不变，第二篇再逐项修改资源和请求。
 
----
+## 如果实验停在中途
 
-**第一篇回顾**
+| 现象 | 下一步检查 |
+|---|---|
+| 没有设备 | 驱动、RXE 创建结果、容器设备映射及用户态库 |
+| 端口不 ACTIVE | 物理链路、交换机；IB 还需检查子网管理器 |
+| TCP 连接失败 | server 是否已启动、地址与控制端口是否可达 |
+| TCP 成功而 RDMA 超时 | 设备、端口、GID 和端到端路径 |
+| perftest 成功而示例失败 | 两个程序实际采用的参数是否一致 |
+| 注册内存失败 | 返回错误、锁定内存限制、分配与权限 |
 
-完成第一篇后，应该能够：
+表 1-2：首次实验的常见停滞位置。
+{: .table-caption }
 
-- 判断一台机器是否具备运行 RDMA 程序的基本条件
-- 理解 RDMA 与 TCP socket 的核心区别
-- 运行一个最小的 one-sided RDMA 程序
+这些是检查方向，不是仅凭一条错误就能确定的根因。更完整的观察方法见[诊断章节](../04-optimization/06-diagnostics.md#symptoms)。
 
-下一篇将继续说明这些对象和协议是怎么被组织起来的。
+下一章回到这个程序的 `main`，解释[一次 WRITE 所需的资源](../02-programming-model/01-first-rdma-program.md)。示例只完成一次传输，其阻塞等待和错误时退出的处理适合观察基本流程；长期运行的服务需要第四篇的超时与回收机制。
 
-## 延伸阅读
+## 参考资料
 
-- [perftest](https://github.com/linux-rdma/perftest)：`ib_write_bw`、`ib_send_bw`、`ib_read_lat` 等测试工具的官方仓库，其 README 说明了各参数含义。
-- [Soft-RoCE（RXE）内核文档](https://docs.kernel.org/infiniband/soft-roce.html)：说明 RXE 的加载、配置与限制。
-- [rdma-core](https://github.com/linux-rdma/rdma-core)：`ibv_devices`、`ibv_devinfo` 等用户态工具与库的源码所在。
-- 本章所有命令（`modprobe`、`rdma`、`ip`、`ibv_*`、`perftest`）的预期输出与读者系统版本、驱动和固件有关；判定标准以命令成功执行且输出字段符合语义为准，不要照搬示例中的具体数值。
+[perftest 官方说明](https://github.com/linux-rdma/perftest)列出测试选项与实验约束；[Linux RXE 实现](https://github.com/torvalds/linux/tree/master/drivers/infiniband/sw/rxe)对应本章的软件设备。

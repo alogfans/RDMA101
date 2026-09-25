@@ -1,54 +1,47 @@
 # RDMA101
 
-RDMA101 是一套面向工程实践与系统研究的 RDMA 教程。项目源于 Mooncake Transfer Engine 的开发与推广实践，但并不局限于 Mooncake TE 本身。它试图为希望理解、使用、运维或开发 RDMA 系统的读者提供一条相对完整的学习路径。
+RDMA101 是一套中文 RDMA 教程，从运行一个远端内存写入程序开始，逐步解释资源、请求和完成处理，再追踪数据经过内存、网卡和网络的过程。后续章节把程序扩展到异步服务、GPU 数据传输与 AI 系统。项目源于 Mooncake Transfer Engine 的开发实践。
 
-Mooncake TE 面向 AI 推理、KVCache 迁移、分布式缓存和异构存储等场景，RDMA 是其中重要的高性能传输方式之一。在实际使用和开发过程中，RDMA 的门槛往往并不只体现为 API 数量多、关系复杂，而是体现为编程模型、软硬配置、错误语义和性能调优之间的相互关联。一个程序能够运行，并不意味着读者已经理解了 RDMA 编程模型；一个程序在示例环境中正确，也不意味着它在真实集群中一定容易部署、排错和优化。
+[在线阅读](https://renfeng.org/rdma101/) · [术语与问题索引](docs/reference.md) · [示例程序与测试](examples/README.md)
 
-因此，RDMA101 的目标不是替代 Verbs API 手册，也不是编写一份 Mooncake TE 操作说明。它关注的是二者之间的空白：从第一个可运行的 RDMA 程序出发，逐步建立 RDMA 的编程模型，理解一次传输在系统内部的执行过程，掌握常见优化方法，并最终回到真实系统中分析设计取舍。
+阅读需要基本的 C/C++ 和 Linux 使用经验。没有 RDMA 网卡时，可以用 Soft-RoCE/RXE 学习接口和通信流程；硬件性能和 GPUDirect 实验需要相应设备。
 
-[![Documentation](https://img.shields.io/badge/docs-online-blue)](https://renfeng.org/rdma101/)
-[![GitHub](https://img.shields.io/badge/github-alogfans%2FRDMA101-black)](https://github.com/alogfans/RDMA101)
-[![License](https://img.shields.io/badge/license-CC%20BY--NC--SA-green)](LICENSE)
+## 从哪里开始
 
-## 内容结构
+六篇共 34 章。初学者顺序阅读前三篇，再根据工作需要进入后续内容；已有经验的读者可以按术语、API 或错误现象查找。
 
-当前课程分为五篇。第一至三篇已经包含完整章节与配套实验；第四篇（优化技巧）与第五篇（实例研究）目前是主题预览，正在逐步补充详细章节。
+| 内容 | 主要问题 |
+|---|---|
+| [第一篇：快速入门](docs/01-introduction/index.md) | RDMA 和 socket 有什么不同？如何跑通第一个程序？ |
+| [第二篇：编程模型](docs/02-programming-model/index.md) | 如何注册内存、连接队列、提交请求和处理完成？ |
+| [第三篇：内部机制](docs/03-internals/index.md) | 网卡怎样执行请求？网络和主机拓扑怎样影响结果？ |
+| [第四篇：性能优化与工程实践](docs/04-optimization/index.md) | 怎样测量、增加并发，并管理连接与故障？ |
+| [第五篇：GPU 与 AI 数据传输](docs/05-gpu-data/index.md) | 怎样描述 Tensor、建立 GPU 依赖并验证传输路径？ |
+| [第六篇：传输引擎与 AI 系统案例](docs/06-case-studies/index.md) | TE 怎样接入 KV 缓存、权重同步和数据流水线？ |
 
-在线文档发布在 <https://renfeng.org/rdma101/>，项目源码和示例程序托管在 <https://github.com/alogfans/RDMA101>。
+## 运行示例与构建文档
 
-- [第一篇：快速入门](docs/01-introduction/index.md)
-  建立实验环境，识别 RDMA 设备，运行基础工具，并完成一个最小 RDMA Hello World。
-- [第二篇：编程模型](docs/02-programming-model/index.md)
-  解释 RDMA 程序的基本结构，重点讨论 MR、QP、CQ、WR、远端地址、访问权限和 completion 等概念之间的关系。
-- [第三篇：机制探秘](docs/03-internals/index.md)
-  从应用代码出发，追踪一次 RDMA 请求经过用户态库、驱动、网卡、PCIe、NUMA 和 RoCE 网络的过程。
-- [第四篇：优化技巧](docs/04-optimization/index.md)
-  讨论 RDMA 性能优化中常见的机制和边界，包括 batching、inline data、queue depth、MR cache 和 polling 等主题。
-- [第五篇：实例研究](docs/05-case-studies/index.md)
-  回到真实系统，分析 Mooncake TE 以及其他 RDMA 系统在数据路径、控制路径、内存管理、故障处理和性能优化方面的设计。
+环境检查和双端启动步骤见 [1.2 环境配置与第一个 RDMA 程序](docs/01-introduction/02-environment-and-first-program.md)。第二篇的三个实验依次观察设备信息、资源生命周期和单进程内两个 QP 的通信：
 
-如果目标是尽快使用 Mooncake TE，建议优先阅读第一篇和第二篇。若需要排查性能和稳定性问题，第三篇和第四篇会提供更直接的背景。若希望参与 Mooncake TE 或其他 RDMA 系统的底层开发，建议按顺序阅读全部五篇。
+```bash
+make -C examples/programming_model
+./examples/programming_model/01_device_info
+./examples/programming_model/02_resource_lifecycle
+./examples/programming_model/03_rc_loopback
+```
 
-## 读者对象
+后续章节的局部代码和伪代码会注明适用范围。GPU 示例需要对应的 CUDA 或 PyTorch 环境；TE 示例需要安装兼容的 Mooncake Python 包，并确认所用后端。
 
-本教程主要面向以下读者：
+本地预览文档：
 
-- 希望使用 Mooncake TE，但需要先理解 RDMA 基础概念的工程人员；
-- 希望参与 Mooncake TE 或其他 RDMA 系统开发的开发者；
-- 需要处理 RDMA、RoCE 或高性能网络问题的运维和系统工程人员；
-- 研究分布式系统、分布式存储、远程内存和 AI 基础设施的学生与研究人员。
+```bash
+python3 -m pip install -r requirements.txt
+mkdocs serve
+```
 
-读者最好具备基本的 C/C++ 编程能力和 Linux 使用经验。本教程不要求读者事先具备网络开发经验。
+配套实验新增了连续 WRITE、Tensor 布局、CUDA 同步和 TE 双进程校验。运行 `make -C examples check` 可以统一编译和测试；缺少依赖的项目会明确跳过。逐步说明与预期结果见[实验指南](docs/labs.md)。
 
-## 预期价值
-
-对于 Mooncake TE 的使用者和运维人员，本教程希望帮助他们判断运行环境是否满足 RDMA transport 的基本要求，并在面对连接失败、带宽异常、延迟抖动或 QP 状态异常时，能够更快地确定排查方向。
-
-对于系统开发人员，本教程希望帮助他们理解 RDMA transport 的基本代码结构，建立概念与代码实现之间的联系，从而更有效地参与故障修复、性能优化和新功能开发。
-
-对于科研人员，本教程希望提供进入 RDMA 系统研究的必要背景，使其能够阅读相关论文、复现实验，并基于 Mooncake TE 或其他 RDMA 系统开展进一步研究。
-
-此外，RDMA101 也希望沉淀为一份面向 AI 编程助手的 RDMA 领域语料库。通过将术语、对象关系、数据路径和常见错误组织在同一套文档中，可以为代码理解、排错建议、实验步骤生成和性能现象解释提供更可靠的上下文。
+文档修改遵循[写作准则](SKILLS.md)，提交前运行 `mkdocs build --strict` 和 `git diff --check`。内容划分与案例选取依据见[大纲与编写说明](OUTLINE.md)。
 
 ## 贡献
 

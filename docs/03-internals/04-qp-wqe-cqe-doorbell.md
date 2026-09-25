@@ -1,143 +1,62 @@
-# 3.4 队列与门铃
+# 3.4 WQE、CQE 与 Doorbell
 
-QP 和 CQ 是 Verbs 编程模型中最常见的对象。到设备执行层，它们不再只是 API 句柄，而是一组由用户态、内核和网卡共同维护的队列状态。应用把 WR 投递到 QP；mlx5 provider 把 WR 写成 WQE；doorbell 通知设备读取新 WQE；设备完成后向 CQ 写入 CQE；provider 再把 CQE 转换为应用看到的 WC。
+第二篇把 SQ 和 CQ 当成软件接口中的队列。实际执行时，CPU 与网卡也需要通过队列交换信息：CPU 发布工作，设备取走；设备发布完成，CPU 再取回。本章以 mlx5 为例解释它们怎样协作。
 
-QP 创建参数中的队列深度和 SGE 上限，会在设备侧变成真实的资源约束。创建完成以后，provider 不能任意扩大发送队列，也不能让一条 WQE 引用超过上限的 SGE。队列容量、WQE 格式和 completion 策略因此直接影响程序能投递多快、能积压多少未完成请求，以及 CQ 是否会被完成记录压满。
+普通 Verbs 应用通过 Provider 使用这些结构。下面的内部布局用于理解执行和性能，不能直接当成可移植接口。
 
-## 3.4.1 QP 的队列形态
+## 循环队列需要区分新旧位置
 
-一个 RC QP 至少包含发送方向和接收方向两组队列状态。Send Queue 保存发送 WQE，Receive Queue 保存接收 WQE。对于 RDMA WRITE 和 RDMA READ，发送方主要使用 SQ；对于 SEND/RECV，接收方必须提前在 RQ 上投递 Receive WQE，否则发送来的 SEND 无法匹配。
+队列占用有限空间，逻辑位置会不断前进，物理槽位则循环复用。生产者不能覆盖尚未消费的工作，消费者也不能把上一圈遗留的内容当成新条目。
 
-```text
-QP
+对发送方向，软件写入 WQE 并推进发布位置，设备执行后返回完成，软件再推进可回收位置。CQ 则由设备写条目，Provider 判断是否有新结果并推进消费位置。mlx5 CQE 的所有权信息参与区分队列轮次。
 
-  Send Queue
-    WQE #0
-    WQE #1
-    WQE #2
-    ...
+应用观察到 SQ 满，可能是完成处理没有及时回收发送进度；CQ 积满，则可能是软件来不及取走结果。两者都需要结合生产、执行和消费速度分析。
 
-  Receive Queue
-    Recv WQE #0
-    Recv WQE #1
-    ...
+## 一条 WRITE 的工作项
 
-  Doorbell Record
-    SQ producer index
-    RQ producer index
+mlx5 的普通 WRITE WQE 可以按用途看成以下部分：
 
-  Device QP Context
-    QPN, state, PSN, path, retry, queue pointers, UAR relation
-```
+| 部分 | 主要描述 |
+|---|---|
+| 控制信息 | 操作、队列位置和完成标志等 |
+| 远端地址信息 | 目标地址与 `rkey` |
+| 本地数据描述 | 源地址、长度与 `lkey` |
 
-SQ、RQ 和 doorbell record 通常位于主机内存，并通过 mmap 暴露给用户态 provider。设备可以通过 DMA 读取 WQE 和 doorbell record；软件可以在用户态写入新 WQE 并推进生产者位置。QP context 则是设备侧状态，创建和状态转换时由内核驱动配置。
+表 3-2：一条 WRITE 的工作项。
+{: .table-caption }
 
-这种布局解释了 QP 的两个边界。第一，投递 WR 只是写入用户态映射的队列，并通知设备；它不是同步传输。第二，队列容量是真实资源。SQ 被填满而 completion 没有及时回收时，后续 `ibv_post_send` 会失败；RQ 没有足够 Receive WQE 时，SEND/RECV 语义会出现 RNR 或错误。
+多个 SGE 增加数据描述，inline 则把小块 payload 编入工作项。具体长度、对齐和字段编码由设备接口规定，应用里的 WR 数量也不能直接等同于设备使用的所有底层槽位数量。
 
-## 3.4.2 WQE 的段结构
+阅读 Provider 时，先找控制段、远端段与数据段如何从 WR 填入，再看提交时怎样更新队列进度。这样可以把每一段对应到第二篇已经认识的字段。
 
-mlx5 WQE 由若干个 16 字节 segment 组成。不同 opcode 使用不同的 segment 组合。RDMA WRITE 的核心结构可以简化为三部分：控制段说明这是一条什么请求，远端地址段说明写到哪里，数据段说明从本地哪里取数据。
+## 写好工作项，再通知设备
+
+doorbell record 是内存中的进度记录；MMIO doorbell 则是对设备映射区域的通知写入。二者名称相近，用途不同。Provider 需要按设备要求，让工作项内容先准备好，再发布相应进度和通知。
 
 ```text
-RDMA WRITE WQE
-
-+-------------------------------+
-| Control Segment               |
-| opcode, WQE index, QPN, flags |
-+-------------------------------+
-| Remote Address Segment        |
-| remote address, rkey          |
-+-------------------------------+
-| Data Segment 0                |
-| local address, lkey, length   |
-+-------------------------------+
-| Data Segment 1 ...            |
-+-------------------------------+
+准备 WQE 内容 → 按平台要求保证发布顺序 → 更新进度 / 写门铃
 ```
 
-mlx5 provider 中的定义可按普通 RDMA WRITE 需要整理为如下简化形式。实际结构还包含保留字段、字节序要求和其他 opcode 使用的扩展段。
+这不是普通 C 语句顺序就能完整表达的保证，还涉及编译器、CPU 与设备访问规则。Provider 封装了这些细节，所以应用一般不直接操作队列内存。
 
-```c
-struct mlx5_wqe_ctrl_seg {
-    uint32_t opmod_idx_opcode;  /* opmod | WQE index | opcode */
-    uint32_t qpn_ds;            /* QP number | descriptor size */
-    uint8_t  signature;
-    uint16_t dci_stream_channel_id;
-    uint8_t  fm_ce_se;          /* fence, completion, solicited event */
-    uint32_t imm;
-};
+mlx5 的 UAR 是用户态设备映射入口。BlueFlame 是相关的特定优化路径，能够通过写设备窗口携带一定工作项内容。它的适用条件、收益和具体格式应按硬件与 Provider 版本分析，初次阅读只需理解“发布请求也有固定开销”。
 
-struct mlx5_wqe_raddr_seg {
-    uint64_t raddr;
-    uint32_t rkey;
-    uint32_t reserved;
-};
+## 完成条目转成 WC
 
-struct mlx5_wqe_data_seg {
-    uint32_t byte_count;
-    uint32_t lkey;
-    uint64_t addr;
-};
-```
+设备写回 CQE，Provider 检查新条目并解释状态，再查回应用保存的请求标识，返回 `ibv_wc`。因此硬件 CQE 与公共 WC 不要求字段一一同名。
 
-在 mlx5 的发送路径中，`IBV_WR_RDMA_WRITE` 会填入远端地址段和数据段。`remote_addr` 与 `rkey` 进入 `mlx5_wqe_raddr_seg`；每个有效 SGE 进入一个 `mlx5_wqe_data_seg`，其中包含本地虚拟地址、`lkey` 和长度。控制段最后发布，包含 opcode、QP number、WQE index、WQE 大小和 completion 标志。控制段最后写入这一点很重要：它减少设备看到半成品 WQE 的机会。
+Provider 还会更新本地队列 bookkeeping，记录哪些发送资源可以再次使用。如果程序不轮询完成，影响的可能不仅是业务拿不到结果，还包括资源无法持续回收。
 
-WQE 中的地址仍以 Verbs 语义中的虚拟地址出现。设备并不是直接相信这个地址，而是用 `lkey` 或 `rkey` 查找设备侧 MKey，再完成权限校验和地址转换。地址与 key 分离，是 RDMA 能够让远端访问内存而不失去保护边界的基础。
+## 选择性生成完成 {#signaling}
 
-## 3.4.3 Doorbell Record、UAR 与 BlueFlame
+每条发送都生成成功完成，最容易验证，但会增加设备写入 CQ 与 CPU 处理的工作。selective signaling 让一部分发送不单独报告成功，再用周期性标记回收进度。
 
-WQE 写入 SQ 后，设备还不知道有新工作。mlx5 发送路径用两步发布队列状态：先写 doorbell record，再写 UAR/BF register。
+例如同一个 RC SQ 上连续执行一组普通 WRITE，可以在受支持的顺序条件下，以后续 signaled 请求的成功完成确认前面的发送进度。不能将这个推理扩展到另一个 QP，也不能忽略 READ/Atomic 与后续操作之间可能需要的 fence 条件。
 
-doorbell record 是主机内存中的队列进度记录。软件把新的 SQ producer index 写入这里，设备可以通过 DMA 读取它。UAR 是映射到用户态的设备访问区域；BF register 是 UAR 中用于低延迟投递的寄存器窗口。写 UAR/BF register 是 MMIO 写，会在 PCIe 上到达设备，起到“敲门”的作用。
+应用仍必须保留每条请求的状态与内存引用，处理错误完成以及最后一组不足批次的请求。如果队列已被 unsignaled 请求填满，才想补一个 signaled 标记，就可能没有空间。因此要提前安排标记和尾部处理。
 
-```text
-软件投递顺序
+这些条件说明优化首先是一种资源管理变化。[4.2](../04-optimization/02-batching-pipeline.md)会先从每条都 signaled 的程序测起，再讨论是否值得减少完成。
 
-1. 填写 Send Queue 中的 WQE
-2. 执行内存屏障，使 WQE 内容先对设备可见
-3. 写 doorbell record，发布新的 producer index
-4. 写 UAR/BF register，通知设备读取队列
-```
+## 参考资料
 
-这个顺序不能随意交换。若设备先看到 doorbell，却还看不到完整 WQE，就可能按错误内容执行请求。provider 因此在 doorbell 之前使用面向设备的内存屏障。屏障保证普通内存中的 WQE 和 doorbell record 先于 MMIO 门铃被设备观察到。
-
-BlueFlame 是 mlx5 的低延迟投递优化。普通 doorbell 主要通知设备去主机内存读取 WQE；BlueFlame 路径可以把 WQE 开头部分随 MMIO 写一并推给设备。小 WQE 因此可能少一次主机内存读取，延迟更低。BlueFlame 依赖 UAR、write-combining 和设备能力，属于 mlx5 实现特征，而不是 Verbs 语义要求。
-
-## 3.4.4 CQE 与 WC
-
-Completion Queue 是设备写回完成结果的队列。应用创建 CQ 后，设备获得写 CQE 的队列状态，provider 获得用户态可读的 CQE ring。发送 WR 若设置 `IBV_SEND_SIGNALED`，完成后会在发送 CQ 中产生 CQE；接收 WQE 匹配到 SEND 后，会在接收 CQ 中产生 CQE。
-
-CQE 是设备格式，WC 是 Verbs 格式。mlx5 CQE 中包含 opcode、owner bit、WQE counter、syndrome、byte count、immediate data 等信息；provider 轮询 CQ 时检查 CQE 是否归软件所有，再把设备字段转换成 `struct ibv_wc`。应用最终看到的是 `wr_id`、`status`、`opcode`、`byte_len`、`imm_data`、`vendor_err` 等字段。
-
-CQE ring 是循环队列，需要区分“这个槽位还属于设备”还是“这个槽位已经有新 completion”。mlx5 使用 owner bit 处理这个问题。设备每写完一圈后，owner bit 的期望值发生翻转；provider 根据 consumer index 和 owner bit 判断某个 CQE 是否有效。
-
-```text
-CQ ring
-
-index:       0   1   2   3   0   1   2   3
-round:       0   0   0   0   1   1   1   1
-owner bit:   A   A   A   A   B   B   B   B
-```
-
-CQ 容量也是真实资源。设备写 CQE 的速度超过应用轮询速度时，CQ 可能溢出。CQ overrun 不是单条 WR 的普通失败，而是完成队列无法再可靠记录结果，通常会导致 CQ 或相关 QP 进入错误状态。高吞吐程序必须控制 signaled WR 的比例，或保证 poller 能及时消费 CQE。
-
-## 3.4.5 Selective Signaling
-
-并非每条 Send WR 都必须产生 CQE。`IBV_SEND_SIGNALED` 控制该 WR 完成后是否写发送 CQ。若每条 WR 都产生 CQE，程序容易获得简单的生命周期边界，但 CQ 压力和 PCIe 写回开销会增加。若只对部分 WR 使用 signaled，吞吐通常更好，但应用必须自己保证未 signaling 的 WR 不会无限堆积，并通过后续 signaled WR 回收队列进度。
-
-Selective signaling 的常见方式是每隔若干条 WR 设置一次 `IBV_SEND_SIGNALED`。当这条 signaled WR 成功完成时，同一 QP 上在它之前的发送 WR 按队列顺序已经完成到相应语义边界。这个规则让应用既能降低 CQE 数量，又能周期性取得资源回收点。
-
-这个策略只适用于理解了 QP 顺序和错误语义的程序。若某条未 signaling WR 失败，错误可能在后续 signaled WR 或异步事件中体现；错误发生后，QP 可能进入 ERR 状态。程序不能因为某条 WR 没有请求 CQE，就认为它的失败可以被忽略。
-
-## 3.4.6 小结
-
-QP、WQE、CQE 和 doorbell 把 Verbs API 与设备执行连接起来。QP 提供队列和状态，WQE 是设备读取的请求格式，doorbell record 和 UAR/BF register 发布新工作，CQE 是设备写回的完成记录，provider 把 CQE 转换为应用可见的 WC。
-
-`ibv_post_send` 的返回点位于投递路径，不位于传输完成点。只有设备执行请求并写回 CQE 后，`ibv_poll_cq` 才能取得 completion。WQE 发布顺序、doorbell、CQ 容量和 selective signaling 都直接影响性能与正确性，也是后续可靠传输、RoCE 网络和诊断章节的基础。
-
-## 延伸阅读
-
-- [rdma-core 源码 `providers/mlx5/qp.c` 与 `providers/mlx5/wq.h`](https://github.com/linux-rdma/rdma-core/tree/master/providers/mlx5)：WQE 段结构、`mlx5_wqe_ctrl_seg`、`mlx5_wqe_data_seg` 的定义与填写逻辑。
-- [NVIDIA/Mellanox BlueField 与 ConnectX 编程手册](https://network.nvidia.com/related-docs/prod_software/)：BlueFlame、doorbell record 与 UAR 的硬件语义（需登录厂商站点获取）。
-- [Linux 内核 mlx5 驱动文档与源码](https://docs.kernel.org/networking/devlink/mlx5.html)：`mlx5_ib` 与 `mlx5_core` 的分工。
-- CQE owner bit 与循环队列的通用设计，可参考 InfiniBand 规范中 CQ 的实现要求。
+[mlx5 QP 实现](https://github.com/linux-rdma/rdma-core/blob/master/providers/mlx5/qp.c)与 [CQ 实现](https://github.com/linux-rdma/rdma-core/blob/master/providers/mlx5/cq.c)展示队列发布和完成解析。需要查看字段时再阅读该 Provider 的头文件与对应设备编程资料。

@@ -1,441 +1,83 @@
-# 2.8 RDMA READ 操作
+# 2.8 RDMA READ
 
-上一节讨论了 RDMA WRITE，即发起方把数据写入远端内存。本章讨论相反方向的操作：RDMA READ。发起方主动从远端已授权内存中读取数据，并写入本地已注册缓冲区。
+WRITE 由生产方推送。若数据已经存在远端，使用者希望在需要时取回，可以发起 READ。远端先注册并授权数据源，之后每次取数由发起方提交，远端 CPU 无需逐次调用发送接口。
 
-RDMA READ 适合按需加载场景：发起方决定何时读取，远端 CPU 不参与数据搬运，也不会收到完成事件。
+例如缓存服务保存了一块不变的数据，客户端从控制通道得到地址、长度和 `rkey`，即可把它读入自己的缓冲区。
 
-与 SEND 或 WRITE with Immediate 不同，RDMA READ 不消耗远端 Receive WR。远端需要做的是提前注册并授权被读取的 MR，同时在 QP 状态中允许一定数量的 outstanding READ/Atomic 请求。
+## 本地缓冲区成为结果位置
 
-本章实验使用 `examples/programming_model/03_rc_loopback.c`。实验的第三段采用 RDMA READ：B 端 buffer 先放入一段字符串，A 端随后投递 READ WR，将 B 端内容读回 A 端 buffer。READ WC 中的 `byte_len` 和 A 端 buffer 的最终内容，对应本章讨论的“完成后本地数据可用”这一语义。
+READ 仍投递到发送队列，因为它主动发起操作。但 SGE 的作用与 WRITE 相反：它描述读回数据要放到本地哪里。
 
-```bash
-make -C examples/programming_model
-./examples/programming_model/03_rc_loopback -d mlx5_0 -p 1 -g 0
-```
+| 字段或权限 | READ 中的含义 |
+|---|---|
+| 本地 SGE 地址、长度、`lkey` | 接收结果的本地范围 |
+| `remote_addr`、`rkey` | 远端数据源及授权 |
+| 本地 MR 的 `LOCAL_WRITE` | 允许本端网卡写回结果 |
+| 远端 MR/QP 的 `REMOTE_READ` | 允许读取远端数据 |
 
-## 2.8.1 RDMA READ 的使用场景
+表 2-9：本地缓冲区成为结果位置。
+{: .table-caption }
 
-在说明代码前，先比较 RDMA READ 和 RDMA WRITE 的数据方向。
+一个常见错误是沿用 WRITE 的只读源 MR 来接收 READ 结果。两个请求都通过 `ibv_post_send` 提交，但设备访问本地内存的方向已经改变。
 
-二者都是单边操作，但数据方向不同。
+## 从 WRITE 请求改成 READ
 
-### WRITE vs READ：数据方向
-
-| 操作 | 数据方向 | 谁主动 | 典型用途 |
-|------|---------|--------|---------|
-| **RDMA WRITE** | 发起方 → 远端 | 发起方推送 | 数据推送、状态同步 |
-| **RDMA READ** | 远端 → 发起方 | 发起方拉取 | 按需加载、远程缓存 |
-
-!!! note "READ 与 WRITE 的选择"
-    有些场景下，发起方不知道何时需要数据，或者远端数据经常变化。READ 允许发起方按需拉取数据，而不是等待远端推送。
-
-### RDMA READ 的执行过程
-
-```mermaid
-sequenceDiagram
-    participant Initiator as 发起方
-    participant INIC as 发起方网卡
-    participant TNIC as 远端网卡
-    participant Target as 远端
-
-    Note over Initiator: 1. 准备本地接收缓冲区
-    Initiator->>Initiator: alloc & register buffer
-
-    Note over Initiator: 2. 投递 RDMA READ WR
-    Initiator->>INIC: ibv_post_send(RDMA READ)
-
-    Note over INIC: 3. 发送读请求
-    INIC->>TNIC: READ 请求 (addr, rkey)
-
-    Note over TNIC: 4. 读取远端内存
-    TNIC->>TNIC: DMA 读取远端内存
-
-    Note over TNIC: 5. 返回数据
-    TNIC->>INIC: 响应 + 数据
-
-    Note over INIC: 6. 写入本地内存
-    INIC->>Initiator: DMA 写入本地缓冲区
-
-    Note over Initiator: 7. 轮询 CQ 确认
-    Initiator->>INIC: ibv_poll_cq()
-    INIC-->>Initiator: READ WC (含 byte_len)
-```
-
-图 2-12：RDMA READ 操作的完整流程。
-{: .figure-caption }
-
-!!! note "RDMA READ 需要往返"
-    RDMA WRITE 是单向的：发起方发送数据，远端网卡确认。RDMA READ 需要往返：发起方发送请求，远端网卡读取内存并发送响应。这意味着 RDMA READ 的延迟通常比 RDMA WRITE 更高。
-
-### RDMA READ 的典型应用场景
-
-RDMA READ 适用于发起方需要主动获取数据的场景：
-
-| 场景 | 说明 |
-|------|-------------------|
-| **按需数据加载** | 客户端按需从服务器读取数据，无需等待推送 |
-| **分布式缓存** | 从远程节点缓存中读取数据 |
-| **数据库查询** | 从远程数据节点读取查询结果 |
-| **状态检查** | 读取远端节点的状态信息 |
-
-## 2.8.2 基本 RDMA READ
-
-### 投递 RDMA READ WR
-
-RDMA READ WR 的结构需要指定远端地址、`rkey` 和本地接收缓冲区：
+在前一章请求结构的基础上，保留已连接 QP，使用本地可写结果 MR：
 
 ```c
-// 准备本地接收缓冲区（必须已注册）
-char recv_buffer[4096];
-struct ibv_mr *recv_mr = ibv_reg_mr(pd, recv_buffer, sizeof(recv_buffer),
-                                     IBV_ACCESS_LOCAL_WRITE);
-
-// 构造 SGE：描述本地接收缓冲区
 struct ibv_sge sge = {
-    .addr = (uintptr_t)recv_buffer,
-    .length = sizeof(recv_buffer),
-    .lkey = recv_mr->lkey
+    .addr = (uintptr_t)result_buffer,
+    .length = read_size,
+    .lkey = result_mr->lkey,
 };
-
-// 构造 RDMA READ WR
 struct ibv_send_wr wr = {
-    .wr_id = 1001,                        // 用户定义的 ID
-    .sg_list = &sge,                      // 本地接收缓冲区
+    .wr_id = 1002,
+    .sg_list = &sge,
     .num_sge = 1,
-    .opcode = IBV_WR_RDMA_READ,          // RDMA READ 操作
-    .send_flags = IBV_SEND_SIGNALED,      // 生成 CQE
-    .wr.rdma.remote_addr = remote_addr,   // 远端虚拟地址
-    .wr.rdma.rkey = remote_rkey           // 远端访问密钥
+    .opcode = IBV_WR_RDMA_READ,
+    .send_flags = IBV_SEND_SIGNALED,
+    .wr.rdma.remote_addr = remote_addr,
+    .wr.rdma.rkey = remote_rkey,
 };
-
-struct ibv_send_wr *bad_wr;
-if (ibv_post_send(qp, &wr, &bad_wr)) {
-    fprintf(stderr, "Failed to post RDMA READ WR\n");
-    return -1;
-}
+struct ibv_send_wr *bad = NULL;
+int rc = ibv_post_send(qp, &wr, &bad);
+if (rc != 0) return -1;
 ```
 
-!!! note "注意 SGE 的含义"
-    对于 RDMA READ，SGE 描述的是**本地接收缓冲区**，与 SEND 的 SGE 含义相同。这与 RDMA WRITE 不同——WRITE 的 SGE 是本地数据源，READ 的 SGE 是本地数据目的地。
-
-### RDMA READ 的完成语义
-
-**WC 生成的时间点**：数据已经从远端内存通过 DMA 读回到发起方本地内存。
-
-发起方 CQ 会收到一个 READ WC，`opcode` 为 `IBV_WC_RDMA_READ`，`status` 为 `IBV_WC_SUCCESS` 才表示读取成功完成，`byte_len` 表示完成的读取字节数。远端不会获得 WC，远端 CPU 不参与数据搬运，只是由远端网卡响应读请求。
-
-!!! success "发起方收到 WC 时，数据已经可用"
-    这是 RDMA READ 与 RDMA WRITE 的**关键区别**：
-
-    RDMA READ 的成功 WC 表示数据已经在本地内存中，可以直接使用；RDMA WRITE 的成功 WC 表示本地 WR 已完成，但远端应用不会自动收到通知。
-
-    RDMA READ 是拉取操作。只有当数据 DMA 到本地缓冲区后，发起方才会获得成功完成。
-
-!!! note "`byte_len` 字段"
-    RDMA READ 的 `byte_len` 表示完成的读取字节数。成功完成时，它应与 WR 中 SGE 的总长度一致；若访问超出远端 MR 范围或权限不足，操作会以错误完成，而不是表现为普通短读。
-
-### 示例：发起方
-
-```c
-#include <infiniband/verbs.h>
-#include <stdio.h>
-#include <string.h>
-#include <errno.h>
-
-int rdma_read_data(struct ibv_qp *qp, struct ibv_cq *cq,
-                   struct ibv_mr *recv_mr,
-                   uint64_t remote_addr, uint32_t remote_rkey,
-                   size_t read_size) {
-    // 构造 SGE：描述本地接收缓冲区
-    struct ibv_sge sge = {
-        .addr = (uintptr_t)recv_mr->addr,
-        .length = read_size,
-        .lkey = recv_mr->lkey
-    };
-
-    // 构造 RDMA READ WR
-    struct ibv_send_wr wr = {
-        .wr_id = 1001,
-        .sg_list = &sge,
-        .num_sge = 1,
-        .opcode = IBV_WR_RDMA_READ,
-        .send_flags = IBV_SEND_SIGNALED,
-        .wr.rdma.remote_addr = remote_addr,
-        .wr.rdma.rkey = remote_rkey,
-        .next = NULL
-    };
-
-    // 投递 WR
-    struct ibv_send_wr *bad_wr;
-    if (ibv_post_send(qp, &wr, &bad_wr)) {
-        fprintf(stderr, "Failed to post RDMA READ: %s\n", strerror(errno));
-        return -1;
-    }
-
-    printf("RDMA READ WR posted\n");
-    printf("  Remote addr: 0x%lx\n", remote_addr);
-    printf("  Remote rkey: 0x%x\n", remote_rkey);
-    printf("  Local buffer: %p (%zu bytes)\n", recv_mr->addr, read_size);
-
-    // 轮询 CQ 等待完成
-    struct ibv_wc wc;
-    while (1) {
-        int n = ibv_poll_cq(cq, 1, &wc);
-        if (n < 0) {
-            fprintf(stderr, "Poll CQ failed\n");
-            return -1;
-        }
-        if (n == 0) {
-            continue;  // 还没完成，继续轮询
-        }
-
-        // 有 WC 了
-        if (wc.status != IBV_WC_SUCCESS) {
-            fprintf(stderr, "RDMA READ failed: %s\n",
-                    ibv_wc_status_str(wc.status));
-            return -1;
-        }
-
-        if (wc.opcode == IBV_WC_RDMA_READ) {
-            printf("RDMA READ completed\n");
-            printf("  wr_id: %lu\n", wc.wr_id);
-            printf("  bytes read: %u\n", wc.byte_len);
-
-            // 现在数据已在 recv_buffer 中
-            printf("  Data: \"%.*s\"\n", (int)wc.byte_len, (char *)recv_mr->addr);
-            return 0;
-        } else {
-            printf("Got unexpected opcode: %d\n", wc.opcode);
-        }
-    }
-}
-```
-
-### 示例：远端（数据源）
-
-远端需要准备可被读取的内存，并通过控制面交换地址和 `rkey`：
-
-```c
-#include <infiniband/verbs.h>
-#include <stdio.h>
-#include <string.h>
-#include <errno.h>
-
-#define BUFFER_SIZE 4096
+范围和权限检查完成后才能执行这段片段。等待对应成功 WC，再读取结果；不能把失败 READ 当成文件接口中正常的短读。普通 READ 不需要远端 RECV，也不会通知远端业务线程“某个客户端刚刚读完”。
 
-struct rdma_read_source {
-    struct ibv_mr *mr;
-    char *buffer;
-    uint64_t addr;
-    uint32_t rkey;
-};
+## 读取期间谁保持数据稳定
 
-int init_rdma_read_source(struct ibv_pd *pd,
-                         struct rdma_read_source *source) {
-    // 分配内存（页对齐）
-    posix_memalign((void **)&source->buffer, 4096, BUFFER_SIZE);
+传输成功只说明设备完成了访问。如果远端 CPU 同时修改这块对象，客户端可能读到不同更新时刻的数据。例如长度字段已更新，正文尚未改完，得到的组合就不是一个完整版本。
 
-    // 初始化数据
-    strcpy(source->buffer, "Hello from RDMA READ source!");
-    strcat(source->buffer, " This data can be read remotely.");
+最初的实验让 B 先写好字符串，再启动 A 的 READ。真实服务可以用不可变对象加版本发布，或由业务协议协调读写。版本校验也要规定更新顺序与重试条件，不能简单认为多读一次就能得到一致快照。
 
-    // 注册内存，允许远端读取
-    int access = IBV_ACCESS_LOCAL_WRITE |      // 本端可以写
-                 IBV_ACCESS_REMOTE_READ;        // 远端可以读
+远端还必须知道何时可以回收数据源。没有远端完成通知意味着不能仅从 B 的 CQ 判断所有读取已经结束。地址与 `rkey` 的持有期，应与缓存对象或租约的生命周期协调。
 
-    source->mr = ibv_reg_mr(pd, source->buffer, BUFFER_SIZE, access);
-    if (!source->mr) {
-        perror("Failed to register MR");
-        free(source->buffer);
-        return -1;
-    }
-
-    // 准备远端访问信息
-    source->addr = (uint64_t)source->mr->addr;
-    source->rkey = source->mr->rkey;
+## READ 与 Atomic 的并发窗口 {#read-window}
 
-    printf("RDMA READ source initialized:\n");
-    printf("  Address: 0x%lx\n", source->addr);
-    printf("  rkey: 0x%x\n", source->rkey);
-    printf("  Buffer: %p\n", source->buffer);
-    printf("  Data: \"%s\"\n", source->buffer);
+READ 发出请求后，要等待远端返回数据，两端设备需保存未完成操作的状态。除了 SQ 深度，它还受到 READ/Atomic 资源窗口约束。
 
-    return 0;
-}
+| 字段 | 角色 |
+|---|---|
+| RTR 的 `max_dest_rd_atomic` | 本端作为响应方可承担的资源数 |
+| RTS 的 `max_rd_atomic` | 本端允许发起的未完成操作数 |
 
-// 远端可以继续修改数据，发起方的下一次 READ 会读到新数据
-void update_source_data(struct rdma_read_source *source, const char *new_data) {
-    strncpy(source->buffer, new_data, BUFFER_SIZE - 1);
-    source->buffer[BUFFER_SIZE - 1] = '\0';
-    printf("Source data updated: \"%s\"\n", source->buffer);
-}
-```
+表 2-10：READ 与 Atomic 的并发窗口。
+{: .table-caption }
 
-!!! note "远端权限要求"
-    远端 MR 必须设置 `IBV_ACCESS_REMOTE_READ` 权限，不需要 `IBV_ACCESS_REMOTE_WRITE` 权限。发起方的本地接收 MR 需要允许本地写入，因为网卡会把读回的数据写入该缓冲区。
+发起窗口应在本端能力和对端提供的资源内配置。设备字段的精确定义见 [ibv_query_device](https://github.com/linux-rdma/rdma-core/blob/master/libibverbs/man/ibv_query_device.3)。
 
-## 2.8.3 最大并发 RDMA READ 限制
+排队的 READ 可以多于同一时刻实际进行的 READ，网卡按窗口推进。因此，“提交了第五条 READ”本身不能证明超过四个响应资源会立刻产生访问错误。要区分软件已排队、设备已发出和已经完成的数量。
 
-### 并发读取限制
+## 对照推送与拉取
 
-RDMA 协议对并发的 RDMA READ 操作有限制：
+`03_rc_loopback` 的 `[3] RDMA READ` 先在 B 准备字符串，再由 A 取回。输出应从 A 的缓冲区读取。与 WRITE 阶段对照，连接不变，变化的是谁生产数据、谁决定启动搬运，以及谁知道它已经完成。
 
-`max_dest_rd_atomic` 表示远端作为响应方允许的最大并发 RDMA READ 和 Atomic 操作数，`max_rd_atomic` 表示本地作为发起方允许的最大并发 RDMA READ 和 Atomic 操作数。
+逐条读、逐条等会把往返等待串起来。多个独立读取可以使用不同结果区域并发执行；性能实验还应考虑窗口、消息大小和双方内存位置。WRITE 同样涉及 RC 确认，不能仅按“单向与往返”推断两者具有固定倍数的延迟差。
 
-!!! note "并发限制的背景"
-    每个未完成的 RDMA READ 都需要响应方网卡维护请求状态并返回数据。限制并发数是为了保护 responder resources，避免远端网卡资源被过量 READ 或 Atomic 请求耗尽。
+下一章选读 [Atomic](09-atomic.md)，它同样需要响应资源，但把远端读与更新结合成一次操作。
 
-### 配置并发限制
+## 参考资料
 
-在 QP 状态转换时设置这些参数：
-
-```c
-// 接收方（远端）：在 RTR 状态设置
-struct ibv_qp_attr attr = {
-    .qp_state = IBV_QPS_RTR,
-    .max_dest_rd_atomic = 16,  // 允许最多 16 个并发 RDMA READ/Atomic
-    // ...
-};
-
-int attr_mask = IBV_QP_STATE | IBV_QP_MAX_DEST_RD_ATOMIC;
-ibv_modify_qp(qp, &attr, attr_mask);
-
-// 发起方（本地）：在 RTS 状态设置
-attr.qp_state = IBV_QPS_RTS;
-attr.max_rd_atomic = 16;  // 本地最多发起 16 个并发 RDMA READ/Atomic
-
-attr_mask = IBV_QP_STATE | IBV_QP_MAX_QP_RD_ATOMIC;
-ibv_modify_qp(qp, &attr, attr_mask);
-```
-
-!!! note "硬件限制很重要"
-    某些硬件（尤其是老设备或模拟设备）的 `max_dest_rd_atomic` 和 `max_rd_atomic` 限制很低。程序应把 QP 配置和实际投递窗口控制在双方能力范围内；超出限制时，可能在投递阶段失败，也可能在完成阶段体现为远端操作错误。
-
-### 超限的错误
-
-```c
-// WC status = IBV_WC_REM_OP_ERR
-// 原因：超过了远端的 max_dest_rd_atomic 限制
-// 解决：增加 max_dest_rd_atomic 或减少并发数
-```
-
-## 2.8.4 性能考虑
-
-### 延迟与吞吐
-
-RDMA READ 的性能特点：
-
-| 特性 | 说明 |
-|------|------|
-| **延迟** | 比 RDMA WRITE 高，需要往返（请求→响应） |
-| **吞吐** | 受限于并发数和网络往返时间 |
-| **远端负载** | 网卡需要读取内存并发送响应 |
-
-!!! note "RDMA READ 的往返开销"
-    RDMA WRITE 是单向的：数据从发起方流向远端。RDMA READ 需要往返：请求从发起方到远端，数据从远端返回发起方。这意味着：
-    READ 的延迟至少包含一次往返时间，远端网卡还需要读取内存并发送响应。因此在相同条件下，频繁 READ 往往比 WRITE 给远端带来更明显的压力。
-
-### 批量读取优化
-
-```c
-// 逐个读取
-for (int i = 0; i < n; i++) {
-    rdma_read_single(remote_addr + i * size, local_buffer + i * size, size);
-    wait_for_completion();  // 每次都等待
-}
-
-// 批量并发读取
-for (int i = 0; i < n; i++) {
-    rdma_read_post_only(remote_addr + i * size, local_buffer + i * size, size);
-}
-wait_for_all_completions();  // 统一等待
-```
-
-## 2.8.5 错误处理
-
-### 常见错误类型
-
-**错误1：远端访问权限错误**
-
-```c
-// WC status = IBV_WC_REM_ACCESS_ERR
-// 原因：远端 MR 没有 REMOTE_READ 权限
-// 解决：确保远端 MR 注册时设置了正确的权限
-
-int remote_access = IBV_ACCESS_LOCAL_WRITE |
-                   IBV_ACCESS_REMOTE_READ;  // 必须设置
-struct ibv_mr *remote_mr = ibv_reg_mr(pd, buffer, size, remote_access);
-```
-
-**错误2：本地长度错误**
-
-```c
-// WC status = IBV_WC_LOC_LEN_ERR
-// 原因：本地 SGE 长度不足
-// 解决：确保本地缓冲区足够大
-
-size_t read_size = get_data_size();
-size_t buffer_size = read_size + 1024;  // 留余量
-struct ibv_mr *mr = ibv_reg_mr(pd, buffer, buffer_size, access);
-```
-
-**错误3：远端操作错误（并发超限）**
-
-```c
-// WC status = IBV_WC_REM_OP_ERR
-// 原因：超过了远端的 max_dest_rd_atomic 限制
-// 解决：增加远端的 max_dest_rd_atomic
-
-// 接收方（远端）
-struct ibv_qp_attr attr = {
-    .qp_state = IBV_QPS_RTR,
-    .max_dest_rd_atomic = 32,  // 增加到 32
-    // ...
-};
-```
-
-### 错误处理示例
-
-```c
-struct ibv_wc wc;
-int n = ibv_poll_cq(cq, 1, &wc);
-
-if (n > 0 && wc.status != IBV_WC_SUCCESS) {
-    fprintf(stderr, "RDMA READ failed:\n");
-    fprintf(stderr, "  status: %s\n", ibv_wc_status_str(wc.status));
-
-    switch (wc.status) {
-        case IBV_WC_REM_ACCESS_ERR:
-            fprintf(stderr, "  Check: Remote MR has REMOTE_READ permission\n");
-            fprintf(stderr, "  Check: Remote rkey is correct\n");
-            break;
-
-        case IBV_WC_LOC_LEN_ERR:
-            fprintf(stderr, "  Check: Local buffer size is sufficient\n");
-            break;
-
-        case IBV_WC_REM_OP_ERR:
-            fprintf(stderr, "  Check: Remote max_dest_rd_atomic limit\n");
-            break;
-
-        default:
-            fprintf(stderr, "  Check: Connection and resource state\n");
-            break;
-    }
-}
-```
-
-## 2.8.6 本章小结
-
-RDMA READ 由发起方主动从远端已授权内存中取回数据。WR 中的 SGE 描述本地接收缓冲区，因此本地 MR 需要允许本地写入；远端 MR 则需要 `IBV_ACCESS_REMOTE_READ` 权限。与 RDMA WRITE 一样，发起方也必须通过控制面取得远端地址和 `rkey`。
-
-READ 的成功 WC 表示数据已经写入本地缓冲区，可以由应用读取。远端不会因为基本 READ 得到 WC，也不消耗远端 Receive WR。由于 READ 包含请求和响应两个方向，它通常比 WRITE 更受往返延迟和 outstanding READ/Atomic 资源限制影响。
-
-!!! note "后续章节"
-    RDMA READ 适合"按需拉取"的场景，但延迟比 RDMA WRITE 高。下一章会介绍远端 Atomic 操作。
-
-## 延伸阅读
-
-- [rdma-core 手册页：ibv_post_send(3)](https://man.archlinux.org/man/extra/rdma-core/)：RDMA READ 的 WR 字段与 SGE 语义（SGE 描述本地接收缓冲区）。
-- [InfiniBand Architecture Specification Volume 1](https://www.infinibandta.org/)：`max_rd_atomic` 与 `max_dest_rd_atomic` 的规范定义，以及 READ/Atomic 的 responder 资源约束。
-- 本章实验程序为 `examples/programming_model/03_rc_loopback.c` 的第三段（RDMA READ），其 `byte_len` 输出可直接对照本章完成语义。
+[ibv_post_send](https://github.com/linux-rdma/rdma-core/blob/master/libibverbs/man/ibv_post_send.3)定义 READ 请求；[ibv_modify_qp](https://github.com/linux-rdma/rdma-core/blob/master/libibverbs/man/ibv_modify_qp.3)定义两端资源窗口。

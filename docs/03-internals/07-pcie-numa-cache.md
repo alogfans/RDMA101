@@ -1,63 +1,50 @@
-# 3.7 主机拓扑
+# 3.7 PCIe、NUMA 与主机拓扑
 
-RDMA 请求由网卡执行，但数据仍要穿过主机。网卡通过 PCIe 访问内存，CPU 通过 NUMA 互联访问本地或远端内存。API 层的 `ibv_post_send` 看不见这些拓扑差异，延迟和带宽却会清楚地反映出来。
+请求离开 CPU 以后，还要经过主机内部互联，才能到达网卡。即使网络端口很快，跨 NUMA 访问或共享 PCIe 上游链路仍可能限制吞吐。因此一次传输的路径要从源内存开始看，直到目标内存结束。
 
-```text
-CPU Socket 0                  CPU Socket 1
-  Memory Node 0                 Memory Node 1
-      |                             |
-  Root Complex                 Root Complex
-      |                             |
-   PCIe Switch                  PCIe Switch
-      |                             |
-   mlx5_0                         mlx5_1
-```
+## 设备位置决定数据经过哪里
 
-同一条 RDMA WRITE，在拓扑良好的机器上可能只是 NIC 从本地 NUMA 内存读数据并发包；在拓扑不佳的机器上，NIC 可能跨 socket 读远端内存。机制相同，代价不同。
-
-## 3.7.1 PCIe 路径
-
-mlx5 网卡通过 PCIe 与主机通信。WQE 读取、CQE 写回、host memory DMA、doorbell MMIO 都会经过 PCIe 或与 PCIe 相关的路径。PCIe 代际和 lane 宽度决定理论上限，拓扑层级决定访问需要经过哪些 switch、root complex 或 socket 间互联。
-
-PCIe Gen4 x16 的理论双向能力高于 Gen3 x16，Gen5 x16 又高于 Gen4 x16；但 RDMA 程序看到的是有效吞吐，不是规格表数字。有效吞吐受 payload size、DMA 方向、IOMMU、NUMA、设备调度、PCIe switch 和同时竞争的设备影响。诊断性能时，`lspci -vv` 中的 negotiated speed 和 width 比设备宣传能力更重要，因为设备可能插在低速槽位，或被 BIOS/主板限制到较低宽度。
+PCIe 将 CPU、网卡、GPU 等设备连接起来。设备可能挂在同一交换机下，也可能通过不同根端口访问。多个设备共享上游链路时，它们的端口速率不能简单相加。
 
 ```bash
-lspci -tv
-lspci -vv -s 87:00.0 | grep -E 'LnkCap|LnkSta|Speed|Width'
-```
-
-Doorbell 写入也是 PCIe 事务。普通内存写可以被 CPU cache 和内存系统吸收，MMIO 写则面向设备寄存器窗口，延迟和排序规则不同。mlx5 的 BlueFlame 优化正是围绕小 WQE 的 MMIO 投递成本设计的。
-
-## 3.7.2 NUMA locality
-
-NUMA 系统中，每个 CPU socket 通常连接一组本地内存和一部分 PCIe 设备。CPU 访问本地内存延迟低、带宽高；访问另一个 socket 的内存需要经过 socket 间互联。RNIC DMA 访问内存也会受到这种拓扑影响。
-
-如果 `mlx5_0` 属于 NUMA node 1，而应用线程运行在 node 0，buffer 又分配在 node 0，那么一次发送可能包含三段不理想路径：线程跨节点写控制数据，NIC 跨节点读 payload，completion 又跨节点被 poller 读取。单次延迟可能只是增加一小段，但在高 QPS 或大带宽场景中会累积成明显差距。
-
-```bash
+lspci -t
+readlink -f /sys/class/infiniband/mlx5_0/device
 cat /sys/class/infiniband/mlx5_0/device/numa_node
-numactl -H
 ```
 
-优化原则是让 poller 线程、发送线程、RDMA buffer 和 RNIC 尽量位于同一 NUMA 节点。常见做法包括线程绑核、按 NIC 所在节点分配内存、每个 NUMA 节点使用独立 QP/CQ、避免多个 socket 共享同一个高频 CQ。这样的优化不改变 Verbs 语义，却常常决定实际性能上限。
+第一条帮助观察 PCIe 树，后两条把 RDMA 设备对应到 PCI 地址与 NUMA 节点。`numa_node` 为 `-1` 表示没有提供有效亲和信息，不能直接当作节点 0。
 
-## 3.7.3 DMA 与 CPU 缓存
+## 线程位置与内存位置是两件事
 
-在主流服务器平台上，普通 host memory 的 DMA 与 CPU cache 通常由平台一致性机制和内核 DMA API 共同保证。应用不需要在每次 RDMA 操作前手工刷新 cache，也不应把 `clflush` 当作通用 RDMA 编程步骤。更重要的边界是完成顺序和内存可见性：什么时候可以改写发送 buffer，什么时候可以读取接收 buffer，什么时候远端应用可以消费新数据。
+NUMA 机器包含多个内存节点。CPU 访问本地节点和其他节点的路径不同，网卡 DMA 到不同内存节点也可能经过额外互联。
 
-发送方向上，CPU 在投递 WR 之前写好本地 buffer；provider 在发布 WQE 和 doorbell 前使用必要的内存屏障，保证设备不会先看到门铃却读不到完整 WQE。发送 completion 返回后，本地源 buffer 可以按该 WR 的生命周期规则复用。对于未 signaled WR，则需要通过后续 signaled WR 或其他队列进度判断资源是否可回收。
+仅把 worker 线程绑到网卡附近，还不足以保证缓冲区在相同节点。内存分配、首次实际触页以及后续策略都会影响页面位置。观察时应同时记录线程亲和性与内存分布：
 
-接收方向上，设备 DMA 写入本地 MR 后，completion 是应用读取该数据的重要边界。应用在看到相应 WC 之前，不应假设目标 buffer 已经包含完整新数据。若平台、内存类型或设备不具备一致 DMA 语义，例如某些非一致架构、特殊映射内存或 GPU 显存，还需要使用对应平台提供的同步机制。
+```bash
+numactl --hardware
+numastat -p 12345
+```
 
-## 3.7.4 小结
+`12345` 替换为测试进程 PID。实验可以用 `numactl --cpunodebind=0 --membind=0` 启动测试程序，再与另一内存节点比较；节点编号必须先从本机拓扑取得。绑定行为和权限受系统配置影响，应检查命令结果。
 
-PCIe、NUMA 和缓存可见性构成 RDMA 的主机侧基础。Verbs API 隐藏了这些细节，但无法消除它们的代价。正确性主要依赖 MR 生命周期、设备 DMA 语义和 completion 边界；性能则取决于队列所在内存、线程所在 CPU、RNIC 所在 NUMA 节点和 PCIe 链路能力。
+## CPU 缓存与 DMA
 
-IOMMU 与地址转换成本属于 MR 机制，见 3.3；GPU-NIC 拓扑和显存可见性属于 GPUDirect RDMA 路径，见 3.8。
+网卡通过 DMA 写入内存，CPU 仍需要按平台和编程接口的规则观察这些数据。常见服务器提供主机内存 DMA 一致性支持，但应用线程间的发布、设备完成与 GPU 消费是不同层面的同步。
 
-## 延伸阅读
+例如一个线程处理 CQ 后将缓冲区交给另一个线程，仍需要 C/C++ 中正确的线程同步。对普通标志变量使用无同步的忙读，可能产生语言层面的数据竞争。`volatile` 不提供线程所有权转移或 GPU 执行依赖。
 
-- [PCI Express Base Specification](https://pcisig.com/)：链路代际、lane 与事务类型（MMIO、DMA）的定义。
-- Linux 内核文档 [NUMA 与 CPU 亲和性](https://docs.kernel.org/admin-guide/numa_hw.html)：`numactl` 与 NUMA 拓扑解释。
-- [NVIDIA/Mellanox 性能调优手册](https://docs.nvidia.com/networking/)：PCIe 带宽、NUMA 局部性与网卡队列的调优建议。
-- 关于 DMA 与 CPU 缓存一致性（DDIO 等），可参考 CPU 厂商（Intel/AMD）的架构文档与网卡厂商白皮书。
+第五篇会在这条路径中加入显存和 CUDA stream。此处先保持主机内存实验，避免同时改变内存位置和执行模型。
+
+## 做一组有解释力的对照
+
+固定设备、消息大小、QP 数量和测试时长，先让线程与内存在网卡所在节点，再只改变内存位置。比较有效带宽、CPU 使用量和延迟；随后再单独改变线程位置。
+
+如果一次把线程、内存、多网卡数量和消息大小都改变，即使带宽提高，也难以知道原因。拓扑图只是形成假设的依据，测量才说明当前负载是否真正受这条路径限制。
+
+记录多网卡结果时还应观察：瓶颈是否转移到共享 PCIe 链路或内存带宽。单网卡已经接近某个共同上限时，增加第二张卡可能不会带来相同比例的提升。
+
+第三篇至此把一次 WRITE 串过用户态、设备、网络和主机内存。下一篇从[性能测量](../04-optimization/01-measurement.md)开始，用这些知识解释优化结果。
+
+## 参考资料
+
+[Linux NUMA 内存策略](https://docs.kernel.org/admin-guide/mm/numa_memory_policy.html)解释分配策略；[Linux DMA API](https://docs.kernel.org/core-api/dma-api.html)解释设备访问规则。GPU 设备路径可继续阅读 [GPUDirect RDMA 官方文档](https://docs.nvidia.com/cuda/gpudirect-rdma/index.html)。

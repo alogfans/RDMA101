@@ -1,25 +1,5 @@
-# 第五篇：实例研究
+# 系统案例：新的阅读位置
 
-本篇回到真实系统，分析 RDMA 在工程系统中的使用方式。前四篇分别建立运行方法、编程模型、内部机制和优化方法；第五篇会把这些概念放回 Mooncake TE 以及其他 RDMA 系统的数据路径和控制路径中。
+系统案例已扩充为[第六篇：传输引擎与 AI 系统案例](../06-case-studies/index.md)。先从 [Mooncake Transfer Engine](../06-case-studies/01-transfer-engine.md) 的 CPU buffer 实验开始，再选择 PD 分离、共享 KV 缓存、权重同步或多模态流水线。
 
-## 学习目标
-
-完成本篇后，读者应当能够：
-
-- 说明一个真实 RDMA 系统如何组织 endpoint、metadata 与 transport 等抽象；
-- 分析 RDMA READ/WRITE 在 AI 推理、KVCache 迁移和分布式缓存中的适用条件；
-- 描述系统如何处理连接失败、QP error、重试与 failover，并与 RC 错误语义对应；
-- 区分论文系统与工程系统在 RDMA 使用方式上的差异，识别可复现与不可复现的结论。
-
-## 计划内容
-
-本篇后续章节将围绕以下主题展开：
-
-- Mooncake TE 如何组织 endpoint、metadata 和 transport；
-- RDMA READ/WRITE 如何服务 AI 推理、KVCache 迁移和分布式缓存；
-- 系统如何处理连接失败、QP error、重试和 failover；
-- 性能调优如何与真实 workload 结合；
-- 论文系统与工程系统在 RDMA 使用方式上的差异。
-
-!!! note "章节状态"
-    本篇目前是主题预览。详细案例章节正在编写中；读者可先对照 Mooncake TE 的源码与文档阅读，并尝试用前四篇的概念分析其 transport 设计。
+需要补充显存注册、Tensor 布局和 GPU 同步知识时，可以先读[第五篇：GPU 与 AI 数据传输](../05-gpu-data/index.md)。本页保留旧目录入口。

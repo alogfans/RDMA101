@@ -1,493 +1,91 @@
-# 2.7 RDMA WRITE 操作
+# 2.7 RDMA WRITE
 
-上一节我们讨论了 SEND/RECV——RDMA 的双边操作。发送方发送数据，接收方必须提前准备好缓冲区。
+SEND 把数据放进接收方预先投递的缓冲区。WRITE 则由发起方在请求中指定远端地址，接收方不必为每一块数据投递 RECV。第一篇的字符串程序就是一次这样的写入。
 
-本章讨论 RDMA WRITE。它是一种单边操作：发起方把本地数据写入远端已经授权的内存区域，远端 CPU 不参与这次数据搬运，也不会自动得到完成事件。
+本章把地址、完成和通知放在一起，进一步考虑：如果要反复使用同一个远端缓冲区，两端应怎样协作？
 
-本章实验使用 `examples/programming_model/03_rc_loopback.c`。实验的第二段采用 RDMA WRITE：A 端投递 WRITE WR，将 A 的 buffer 写入 B 的 MR，并等待 A 端的 WRITE WC。B 端没有投递 RECV WR，也不会因为基本 WRITE 得到 RECV WC；实验随后打印 B 端 buffer，用来观察远端内存已经发生变化。
+## 准备两端的内存
 
-```bash
-make -C examples/programming_model
-./examples/programming_model/03_rc_loopback -d mlx5_0 -p 1 -g 0
-```
+A 是数据源，B 是目标。普通非 inline WRITE 使用 A 的本地 MR 读取源，使用 B 的 `rkey` 授权目标写入。B 的 MR 需要本地写与远端写权限，QP 也要允许远端写入。
 
-## 2.7.1 RDMA WRITE 的使用场景
+控制通道至少要让 A 知道 B 的目标地址、可写长度和 `rkey`。A 应检查本次长度落在双方约定范围内。MR 的权限检查是设备保护，应用仍应在提交前验证自己的长度与偏移。
 
-RDMA WRITE 适合由发起方主动推送数据的场景。与 SEND/RECV 相比，它不要求远端为每次数据到达提前投递 RECV WR，也不会在远端自动生成完成事件。本章只讨论这一操作在 Verbs 程序中的使用方式和语义边界。
+## 描述并投递写入
 
-### 单边与双边
-
-双边操作（SEND/RECV）要求发送方投递 SEND WR，接收方提前投递 RECV WR，因此双方都会通过 completion 感知操作。RDMA WRITE 则是单边操作，只有发起方投递 WR，远端不需要为基本 WRITE 投递接收请求，远端 CPU 也不会自动知道这次写入已经发生。
-
-!!! note "单边操作"
-    单边指只有发起方投递 WR。远端必须提前注册并授权内存，但不需要为每次 WRITE 投递 RECV WR，也不会因为基本 RDMA WRITE 自动收到 WC。
-
-    这里说的是基本 RDMA WRITE。`RDMA_WRITE_WITH_IMM` 虽然数据仍写入远端指定地址，但 immediate 通知会消耗远端预投递的 Receive WR，并在远端 CQ 中生成完成记录。
-
-### RDMA WRITE 的执行过程
-
-```mermaid
-sequenceDiagram
-    participant Initiator as 发起方
-    participant INIC as 发起方网卡
-    participant TNIC as 远端网卡
-    participant Target as 远端
-
-    Note over Initiator: 1. 准备本地数据
-    Initiator->>Initiator: memcpy(buffer, data)
-
-    Note over Initiator: 2. 投递 RDMA WRITE WR
-    Initiator->>INIC: ibv_post_send(RDMA WRITE)
-
-    Note over INIC: 3. 网卡处理
-    INIC->>TNIC: 通过 RDMA 网络传输
-
-    Note over TNIC: 4. 直接写入远端内存
-    TNIC->>Target: DMA 写入<br/>(远端 CPU 不参与)
-
-    Note over Initiator: 5. 轮询 CQ 确认
-    Initiator->>INIC: ibv_poll_cq()
-    INIC-->>Initiator: WRITE WC
-```
-
-图 2-11：RDMA WRITE 操作的完整流程。
-{: .figure-caption }
-
-### RDMA WRITE vs SEND/RECV
-
-| 特性 | RDMA WRITE | SEND/RECV |
-|------|-----------|-----------|
-| **操作类型** | 单边操作 | 双边操作 |
-| **远端参与** | CPU 不参与 | 必须提前投递 RECV WR |
-| **远端通知** | 无自动通知 | 有 RECV WC |
-| **典型用途** | 大数据传输、状态同步 | 控制消息、RPC |
-
-!!! note "RDMA WRITE 没有远端通知"
-    RDMA WRITE 完成后，发起方可以通过本地 WC 得知 WR 已完成；远端不会收到 WC。如果远端应用需要处理写入内容，需要额外的同步机制。
-
-### RDMA WRITE 的典型应用场景
-
-RDMA WRITE 适用于需要高效数据搬运的场景：
-
-| 场景 | 说明 |
-|------|-------------------|
-| **分布式存储** | 数据直接写入远端存储缓冲区，无需远端 CPU 参与 |
-| **分布式训练** | 梯度更新直接写入远端参数内存 |
-| **数据库** | 数据页面直接写入远端节点 |
-| **状态同步** | 本地状态直接镜像到远端 |
-
-## 2.7.2 基本 RDMA WRITE
-
-### 投递 RDMA WRITE WR
-
-RDMA WRITE WR 的结构需要指定远端地址和 `rkey`：
+下面片段假设 RC QP 已就绪、两端 MR 有效，并且 `length` 已完成范围检查：
 
 ```c
-// 本地数据准备（sizeof 包含结尾的 '\0'，共 19 字节）
-char msg[] = "Hello, RDMA WRITE!";
-memcpy(send_buffer, msg, sizeof(msg));
-
-// 构造 SGE：描述本地数据
 struct ibv_sge sge = {
-    .addr = (uintptr_t)send_buffer,
-    .length = sizeof(msg),
-    .lkey = send_mr->lkey
+    .addr = (uintptr_t)local_buffer,
+    .length = length,
+    .lkey = local_mr->lkey,
 };
-
-// 构造 RDMA WRITE WR
-struct ibv_send_wr wr = {
-    .wr_id = 1001,                        // 用户定义的 ID
-    .sg_list = &sge,
-    .num_sge = 1,
-    .opcode = IBV_WR_RDMA_WRITE,         // RDMA WRITE 操作
-    .send_flags = IBV_SEND_SIGNALED,     // 生成 CQE
-    .wr.rdma.remote_addr = remote_addr,  // 远端虚拟地址
-    .wr.rdma.rkey = remote_rkey          // 远端访问密钥
-};
-
-struct ibv_send_wr *bad_wr;
-if (ibv_post_send(qp, &wr, &bad_wr)) {
-    fprintf(stderr, "Failed to post RDMA WRITE WR\n");
-    return -1;
-}
-```
-
-小消息可以尝试使用 `IBV_SEND_INLINE`。当 WR 以内联方式投递且大小不超过 QP 的实际 `max_inline_data` 时，驱动在 `ibv_post_send` 路径已经读取了本地数据，应用可以在调用返回后复用本地源缓冲区。若没有使用 inline，则仍应等到对应 WR 不再 outstanding 后再复用这段源缓冲区。
-
-!!! note "rkey 是访问凭证"
-    远端地址本身不是权限。发起 RDMA WRITE 时必须同时提供远端地址和正确的 `remote_rkey`。实际系统还需要在控制面管理 `addr`/`rkey` 的交换、撤销和授权范围。
-
-### RDMA WRITE 的完成语义
-
-**WC 生成的时间点**：发起方的 RDMA WRITE WR 已完成，可靠连接上已得到远端确认。
-
-发起方 CQ 会收到一个 WRITE WC，`opcode` 为 `IBV_WC_RDMA_WRITE`，`status` 为 `IBV_WC_SUCCESS` 才表示写入成功完成。基本 RDMA WRITE 不会在远端生成 WC；远端应用如果要处理写入内容，需要依赖额外同步。
-
-!!! warning "写完成不等于应用级完成"
-    发起方获得 WRITE WC 后，本地源 buffer 可以复用；但这不表示远端应用已经处理了写入内容。远端应用级可见性通常依赖额外通知，例如 SEND/RECV、TCP 控制消息或 RDMA WRITE with Immediate。
-
-### 示例：发起方
-
-```c
-#include <infiniband/verbs.h>
-#include <stdio.h>
-#include <string.h>
-#include <errno.h>
-
-int rdma_write_data(struct ibv_qp *qp, struct ibv_cq *cq,
-                   struct ibv_mr *send_mr,
-                   uint64_t remote_addr, uint32_t remote_rkey,
-                   const char *data, size_t len) {
-    // 准备本地数据
-    memcpy(send_mr->addr, data, len);
-
-    // 构造 SGE
-    struct ibv_sge sge = {
-        .addr = (uintptr_t)send_mr->addr,
-        .length = len,
-        .lkey = send_mr->lkey
-    };
-
-    // 构造 RDMA WRITE WR
-    struct ibv_send_wr wr = {
-        .wr_id = 1001,
-        .sg_list = &sge,
-        .num_sge = 1,
-        .opcode = IBV_WR_RDMA_WRITE,
-        .send_flags = IBV_SEND_SIGNALED,
-        .wr.rdma.remote_addr = remote_addr,
-        .wr.rdma.rkey = remote_rkey,
-        .next = NULL
-    };
-
-    // 投递 WR
-    struct ibv_send_wr *bad_wr;
-    if (ibv_post_send(qp, &wr, &bad_wr)) {
-        fprintf(stderr, "Failed to post RDMA WRITE: %s\n", strerror(errno));
-        return -1;
-    }
-
-    printf("RDMA WRITE WR posted\n");
-    printf("  Remote addr: 0x%lx\n", remote_addr);
-    printf("  Remote rkey: 0x%x\n", remote_rkey);
-    printf("  Local data: \"%s\" (%zu bytes)\n", data, len);
-
-    // 轮询 CQ 等待完成
-    struct ibv_wc wc;
-    while (1) {
-        int n = ibv_poll_cq(cq, 1, &wc);
-        if (n < 0) {
-            fprintf(stderr, "Poll CQ failed\n");
-            return -1;
-        }
-        if (n == 0) {
-            continue;  // 还没完成，继续轮询
-        }
-
-        // 有 WC 了
-        if (wc.status != IBV_WC_SUCCESS) {
-            fprintf(stderr, "RDMA WRITE failed: %s\n",
-                    ibv_wc_status_str(wc.status));
-            return -1;
-        }
-
-        if (wc.opcode == IBV_WC_RDMA_WRITE) {
-            printf("RDMA WRITE completed\n");
-            printf("  wr_id: %lu\n", wc.wr_id);
-            return 0;
-        } else {
-            printf("Got unexpected opcode: %d\n", wc.opcode);
-        }
-    }
-}
-```
-
-### 示例：远端（接收方）
-
-远端需要准备可被写入的内存，并通过控制面交换地址和 `rkey`：
-
-```c
-#include <infiniband/verbs.h>
-#include <stdio.h>
-#include <string.h>
-#include <errno.h>
-
-#define BUFFER_SIZE 4096
-
-struct rdma_write_target {
-    struct ibv_mr *mr;
-    char *buffer;
-    uint64_t addr;
-    uint32_t rkey;
-};
-
-int init_rdma_write_target(struct ibv_pd *pd,
-                          struct rdma_write_target *target) {
-    // 分配内存（页对齐）
-    posix_memalign((void **)&target->buffer, 4096, BUFFER_SIZE);
-
-    // 初始化缓冲区
-    memset(target->buffer, 0, BUFFER_SIZE);
-
-    // 注册内存，允许远端写入
-    int access = IBV_ACCESS_LOCAL_WRITE |      // 本端可以写
-                 IBV_ACCESS_REMOTE_WRITE |     // 远端可以写
-                 IBV_ACCESS_REMOTE_READ;       // 远端可以读（可选）
-
-    target->mr = ibv_reg_mr(pd, target->buffer, BUFFER_SIZE, access);
-    if (!target->mr) {
-        perror("Failed to register MR");
-        free(target->buffer);
-        return -1;
-    }
-
-    // 准备远端访问信息
-    target->addr = (uint64_t)target->mr->addr;
-    target->rkey = target->mr->rkey;
-
-    printf("RDMA WRITE target initialized:\n");
-    printf("  Address: 0x%lx\n", target->addr);
-    printf("  rkey: 0x%x\n", target->rkey);
-    printf("  Buffer: %p\n", target->buffer);
-
-    return 0;
-}
-```
-
-!!! note "远端写权限必须配合本地写权限"
-    `ibv_reg_mr` 要求：如果设置 `IBV_ACCESS_REMOTE_WRITE` 或 `IBV_ACCESS_REMOTE_ATOMIC`，必须同时设置 `IBV_ACCESS_LOCAL_WRITE`。
-
-## 2.7.3 RDMA WRITE with Immediate
-
-### 什么是 Immediate 数据
-
-**RDMA WRITE with Immediate** 允许发起方在写入数据的同时携带一个 32 位 `imm_data` 到远端。远端会收到一个 RECV WC，其中包含这个 `imm_data`。
-
-### Immediate 数据的作用
-
-RDMA WRITE 本身不会通知远端应用。`imm_data` 提供了一种轻量级的通知机制：发起方在写入数据的同时发送 32 位通知，远端通过 RECV WC 获得这次通知，并据此判断对应数据已经写入完成。
-
-!!! note "WRITE with Immediate 的定位"
-    基本 RDMA WRITE 不会在远端生成 WC。若需要通知远端，常见选择是额外的控制消息（TCP 或 SEND/RECV）或 RDMA WRITE with Immediate。后者会消耗远端预投递的 RECV WR，并在远端 CQ 中生成 `IBV_WC_RECV_RDMA_WITH_IMM`。
-
-    因为它会消耗 Receive WR，所以远端必须像处理 SEND 一样维护接收队列水位。若没有可用 RECV WR，连接会进入 RNR 相关重试路径。
-
-### 与基本 RDMA WRITE 的对比
-
-| 特性 | 基本 RDMA WRITE | RDMA WRITE with IMM |
-|------|---------------|-------------------|
-| **远端 WC** | 无 | 有 RECV WC |
-| **Immediate 数据** | 无 | 32 位 |
-| **远端应用通知** | 无 | 有 RECV WC |
-| **典型用途** | 批量数据传输 | 带通知的数据传输 |
-
-### RDMA WRITE with IMM 的完成语义
-
-!!! success "远端收到 WC 时的语义"
-    RDMA WRITE with IMM 与基本 RDMA WRITE 的关键区别在于远端会获得一个 RECV WC：
-
-    **当远端收到 RECV WC（包含 `imm_data`）时**：
-    与该 WRITE with IMM 对应的数据写入已经完成，`imm_data` 可作为通知类型、队列编号或长度等小型元数据。远端应用可以把这个 WC 作为开始处理数据的同步点。
-
-    **发起方收到 WRITE WC 时**：
-    本地 WR 已完成，本地源 buffer 可以复用，但这不表示远端应用已经处理了数据。
-
-    !!! tip "使用条件"
-        WRITE with IMM 仍然需要远端提前投递 RECV WR。若远端没有可用 RECV WR，会进入 RNR 相关错误路径。
-
-### 投递 RDMA WRITE with Immediate
-
-```c
-// 构造 RDMA WRITE with Immediate WR
 struct ibv_send_wr wr = {
     .wr_id = 1001,
     .sg_list = &sge,
     .num_sge = 1,
-    .opcode = IBV_WR_RDMA_WRITE_WITH_IMM,  // 注意：使用 WITH_IMM
+    .opcode = IBV_WR_RDMA_WRITE,
     .send_flags = IBV_SEND_SIGNALED,
-    .imm_data = htonl(0xDEADBEEF),         // 32 位立即数据（注意字节序）
     .wr.rdma.remote_addr = remote_addr,
     .wr.rdma.rkey = remote_rkey,
-    .next = NULL
 };
-
-struct ibv_send_wr *bad_wr;
-if (ibv_post_send(qp, &wr, &bad_wr)) {
-    fprintf(stderr, "Failed to post RDMA WRITE with IMM\n");
-    return -1;
-}
+struct ibv_send_wr *bad = NULL;
+int rc = ibv_post_send(qp, &wr, &bad);
+if (rc != 0) return -1;
 ```
 
-### 接收 Immediate 数据
+SGE 描述本地源，`wr.rdma` 描述远端目标。投递成功以后，按 [CQ 章节](05-cq.md#polling)等待 `wr_id = 1001` 的成功完成。完成之前保持源内容不变；WRITE 失败时也不能把目标当成一块完整有效的数据，部分数据可能已经移动。
 
-远端需要提前投递 RECV WR 来接收 `imm_data`：
+## 完成与远端通知 {#notification}
 
-```c
-struct ibv_recv_wr wr = {
-    .wr_id = 2001,
-    .sg_list = NULL,
-    .num_sge = 0,
-    .next = NULL
-};
+普通 WRITE 只在发起方报告相应完成，远端不产生一条普通 RECV 完成。因此 B 还需要一种方法知道数据可以消费。最小程序让 A 等待完成后，经 TCP 发 `D`，B 收到后打印。
 
-ibv_post_recv(qp, &wr, &bad_wr);
+另一种方式是 WRITE with Immediate。数据仍写到请求指定的地址，同时在远端产生带立即数的接收完成。它需要消耗远端预投递的接收请求；这条接收请求用于通知，不决定 WRITE payload 的目标地址。
 
-// 轮询 CQ
-struct ibv_wc wc;
-ibv_poll_cq(cq, 1, &wc);
+| 方式 | 目标地址由谁指定 | 远端如何得知结果 |
+|---|---|---|
+| 普通 WRITE | 发起方 | 应用另行约定通知 |
+| WRITE with Immediate | 发起方 | 带立即数的接收完成，需要 RQ 资源 |
+| SEND | 接收方的 RECV | 接收完成，数据进入 RECV 缓冲区 |
 
-if (wc.opcode == IBV_WC_RECV_RDMA_WITH_IMM) {
-    uint32_t imm_data = ntohl(wc.imm_data);  // 注意字节序转换
-    printf("Received RDMA WRITE with IMM\n");
-    printf("  imm_data: 0x%x\n", imm_data);
+表 2-8：完成与远端通知。
+{: .table-caption }
 
-    // 根据 imm_data 做相应的处理
-    process_notification(imm_data);
-}
+还有程序通过另一次写入更新标志位。这种协议需要同时处理设备写入顺序、CPU 或 GPU 的可见性，以及应用线程同步。不能在普通 C 指针上加一个 `volatile` 就假定获得了完整的跨设备协议。
+
+## 连续写入需要消费确认
+
+第一次 WRITE 成功后，A 可以复用本地源。但如果 A 立即再次写 B 的同一地址，B 可能还在处理上一条消息。于是，源可复用和目标可复用是两个不同时间点。
+
+最简单的双端协议是：
+
+```mermaid
+sequenceDiagram
+    participant A as A
+    participant B as B
+    B->>A: 提供空闲目标区域
+    A->>B: WRITE 数据
+    A->>A: 等待写入成功完成
+    A->>B: 通知这条数据可用
+    B->>B: 消费数据
+    B->>A: 归还目标区域使用额度
 ```
 
-!!! note "RECV WR 的特殊性"
-    对 RDMA WRITE with IMM，远端 RECV WR 只用于生成带 immediate 数据的完成事件，不接收写入数据本身。常见写法是 `num_sge = 0`。
+图 2-2：连续写入需要消费确认。
+{: .figure-caption }
 
-## 2.7.4 缓存一致性与内存序（简述）
+它一次只处理一块数据，容易理解。增加多个槽位以后，A 可以在 B 消费前一块时填写下一块，形成流水线。但每个槽位仍需要编号、有效长度和归还规则。第四篇从这个模型继续讨论并发。
 
-### 核心概念
+本章先按普通主机内存讲解。B 将数据交给 GPU kernel 时，还要建立设备消费依赖，见 [GPU 执行顺序](../05-gpu-data/03-synchronization.md#gpu-sync)。
 
-RDMA WRITE 的完成语义需要分两个角度理解：
+## 从实验中辨认两种完成
 
-**发起方收到 WC 时**：
-发起方本地 WR 已完成，本地 buffer 可以复用；基本 RDMA WRITE 不会让远端自动得到应用层通知。
+`03_rc_loopback` 的 `[2] RDMA WRITE` 让 A 写 B，并从 A 的发送完成判断操作结束。由于两个端点位于一个进程，程序能直接打印 B 的缓冲区。这是实验安排，不能据此省掉分布式程序中的远端通知。
 
-**远端 CPU 何时可见数据？**
-对普通主机内存，平台通常会维护 DMA 与 CPU 之间的一致性；对设备内存、特殊映射或放宽排序的 MR，则需要参考平台和设备文档。无论哪种情况，应用仍需要一个同步点，避免远端在写入完成前读取数据。
+可以对照第一篇两进程程序，找出环回实验没有通过网络发送的业务通知。再考虑将一个远端缓冲区扩成两个槽位：除了地址，还需给通知增加什么信息，才能知道该消费哪一条数据？
 
-!!! info "这是高级话题"
-    缓存一致性的细节涉及 DDIO、cacheline 粒度、内存屏障、设备内存和 relaxed ordering 等内容。本章只强调应用级同步：远端需要知道何时可以读取被写入的数据。
+需要由数据使用者决定取数时机时，可以改用[下一章的 READ](08-rdma-read.md)。
 
-### 推荐的同步模式
+## 参考资料
 
-**方案 1：使用 RDMA WRITE with IMM**
-
-```c
-// 发起方
-memcpy(data_buffer, large_data, size);
-rdma_write(qp, data_mr, remote_data_addr, remote_data_rkey, data_buffer, size);
-rdma_write(qp, flag_mr, remote_flag_addr, remote_flag_rkey, &done_flag, sizeof(done_flag));
-rdma_write_with_imm(qp, IMM_DATA_DONE);  // 最后带通知
-
-// 远端（收到 IMM 后）
-if (wc.opcode == IBV_WC_RECV_RDMA_WITH_IMM) {
-    // 与该 immediate 对应的写入已经完成，可按协议处理数据
-    process_data();
-}
-```
-
-!!! tip "WRITE with IMM 的优势"
-    WRITE with IMM 把数据写入和远端通知放在同一个 RDMA 操作中，适合作为生产者-消费者协议中的同步点。
-
-**方案2：控制通道同步（需要正确的时序）**
-
-```c
-// 发起方 - 正确的做法
-rdma_write(qp, data_mr, remote_data_addr, remote_data_rkey, data_buffer, size);
-// 必须先等待 RDMA WRITE 完成！
-wait_for_write_completion(qp, cq);
-// 然后才能发送通知
-send_notification(tcp_sock, "DONE");
-
-// 远端
-recv_notification(tcp_sock);
-__sync_synchronize();  // 内存屏障
-process_data();
-```
-
-!!! danger "注意时序问题"
-    如果不等待 RDMA WRITE 完成就直接发送通知，通知可能在数据到达前就到达远端！这是因为 `ibv_post_send` 是异步的，RDMA WRITE 和 SEND/TCP 是并行处理的。
-
-    使用 RDMA WRITE with IMM 可以把通知与写入完成绑定在一起，减少控制面时序错误。
-
-## 2.7.5 错误处理
-
-### 常见错误类型
-
-**错误1：本地访问错误**
-
-```c
-// WC status = IBV_WC_LOC_ACCESS_ERR
-// 原因：本地地址、长度或 lkey 不正确，或 WR 引用了已经失效的 MR
-// 解决：检查 SGE 是否落在本地 MR 范围内，并确认 lkey 属于仍然有效的 MR
-
-int access = 0;  // 仅作为 RDMA WRITE 源缓冲区时，本地读权限是隐式的
-struct ibv_mr *mr = ibv_reg_mr(pd, buffer, size, access);
-```
-
-**错误2：远端访问错误**
-
-```c
-// WC status = IBV_WC_REM_ACCESS_ERR
-// 原因：远端内存权限不足或 rkey 错误
-// 解决：确保远端 MR 有 REMOTE_WRITE 权限
-
-int remote_access = IBV_ACCESS_LOCAL_WRITE |  // 必须同时设置
-                   IBV_ACCESS_REMOTE_WRITE;
-struct ibv_mr *remote_mr = ibv_reg_mr(pd, buffer, size, remote_access);
-```
-
-**错误3：长度错误**
-
-```c
-// WC status = IBV_WC_LOC_LEN_ERR 或 IBV_WC_REM_INV_REQ_ERR
-// 原因：长度超出 MR 范围
-// 解决：确保操作在 MR 范围内
-
-size_t offset = 1000;
-size_t length = 5000;
-// 如果 MR 长度只有 4096，这个操作会失败
-```
-
-### 错误处理示例
-
-```c
-struct ibv_wc wc;
-int n = ibv_poll_cq(cq, 1, &wc);
-
-if (n > 0 && wc.status != IBV_WC_SUCCESS) {
-    fprintf(stderr, "RDMA WRITE failed:\n");
-    fprintf(stderr, "  status: %s\n", ibv_wc_status_str(wc.status));
-    fprintf(stderr, "  vendor_err: %u\n", wc.vendor_err);
-
-    switch (wc.status) {
-        case IBV_WC_LOC_ACCESS_ERR:
-            fprintf(stderr, "  Check: Local SGE address, length, and lkey\n");
-            break;
-
-        case IBV_WC_REM_ACCESS_ERR:
-            fprintf(stderr, "  Check: Remote MR access flags and rkey\n");
-            break;
-
-        case IBV_WC_LOC_LEN_ERR:
-        case IBV_WC_REM_INV_REQ_ERR:
-            fprintf(stderr, "  Check: Operation length within MR bounds\n");
-            break;
-
-        default:
-            fprintf(stderr, "  Check: Connection and resource state\n");
-            break;
-    }
-}
-```
-
-## 2.7.6 本章小结
-
-RDMA WRITE 由发起方主动把本地数据写入远端已经授权的内存。发起方必须通过控制面取得远端地址和 `rkey`，并在 WR 中给出本地 SGE、远端地址和远端 key。基本 RDMA WRITE 不消耗远端 Receive WR，也不会在远端自动生成 WC。
-
-发起方收到成功 WRITE WC，表示这条 WR 在 RDMA 语义下已经完成，本地源缓冲区可以按生命周期规则复用。但远端应用是否已经处理这段数据，仍取决于额外的同步机制。WRITE with Immediate 可以在写入的同时向远端 CQ 产生一个接收完成，但它会消耗远端预投递的 RECV WR，因此仍要纳入接收队列管理。
-
-!!! note "后续章节"
-    RDMA WRITE 是最常用的单边操作，适合高效的数据推送。下一章将讨论 RDMA READ，即由发起方主动从远端拉取数据。
-
-## 延伸阅读
-
-- [rdma-core 手册页：ibv_post_send(3)](https://man.archlinux.org/man/extra/rdma-core/)：RDMA WRITE 相关 WR 字段（`wr.rdma.remote_addr`、`wr.rdma.rkey`）与 `IBV_SEND_INLINE` 的语义。
-- [InfiniBand Architecture Specification Volume 1](https://www.infinibandta.org/)：RDMA WRITE 的完成语义与远端内存可见性边界。
-- 关于 DMA 与 CPU 缓存一致性（DDIO、relaxed ordering 等）的讨论，可参考处理器厂商与网卡厂商的架构文档；应用层同步协议的设计仍以本章给出的原则为准。
+[ibv_post_send 手册](https://github.com/linux-rdma/rdma-core/blob/master/libibverbs/man/ibv_post_send.3)说明 WRITE 操作及立即数字段；[ibv_poll_cq 手册](https://github.com/linux-rdma/rdma-core/blob/master/libibverbs/man/ibv_poll_cq.3)定义接收完成标志。

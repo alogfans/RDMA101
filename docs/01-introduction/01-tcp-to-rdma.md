@@ -1,199 +1,105 @@
 # 1.1 从 TCP 到 RDMA
 
-两台机器之间传输数据，最常见的方式是 TCP socket。TCP 提供可靠、通用、易部署的字节流抽象，把连接维护、报文处理、重传、拥塞控制等细节交给内核完成。这样的抽象降低了网络编程的门槛，但也意味着数据路径会深度经过内核协议栈。对于高性能数据传输系统，系统调用、协议处理和缓冲区管理等都会影响延迟、吞吐和 CPU 开销。
+网络程序经常需要把一段内存中的数据送到另一台机器。例如，一台服务器生成了一批缓存数据，另一台服务器需要读取它们。使用 TCP 时，发送方调用 `send`，接收方调用 `recv`。数据量不大时，这通常已经足够。
 
-RDMA 就是为了解决这类问题而设计的。它重新组织了数据路径：将频繁发生的数据传输从内核协议栈中移出，由应用、用户态库、驱动和 RDMA 网卡共同完成；相应地，应用也必须显式处理内存注册、队列提交和完成事件。学习 RDMA 因而不能只看 API，也不能只看网卡配置——我们需要理解它为什么要这样设计，以及它与传统网络编程有什么不同。
+当数据变成几 GiB 的模型权重，或每秒有大量小块缓存需要交换时，搬运本身也会占用可观的 CPU 时间和内存带宽。RDMA（Remote Direct Memory Access，远程直接内存访问）提供了一种让网卡直接访问已授权应用内存的方式。理解它，可以从熟悉的 socket 程序开始。
 
-本章按照“是什么—为什么—怎么做”的逻辑组织。
+## 从一个字符串的传输开始
 
-- 1.1.1 和 1.1.2 说明网络编程的通用模式，以及 TCP socket 如何实现这一模式（是什么）；
-- 1.1.3 分析 TCP 在高性能数据面下的开销与边界（为什么）；
-- 1.1.4 引出 RDMA 的关键特点，说明它如何重新组织数据路径（怎么做）。
-
-完成本章后，应能理解 RDMA 与 TCP socket 的核心区别，以及 RDMA 的关键特点。实践部分将在下一章展开。
-
-## 1.1.1 网络编程的一般模式
-
-网络程序要解决两类问题。第一类是建立通信关系：本端是谁，远端是谁，双方通过什么路径通信。第二类是传输数据：发送方把哪段内存中的内容送出去，接收方把收到的数据放到哪段内存中，以及应用如何知道一次操作已经完成。
-
-无论底层使用 TCP、UDP、RDMA，还是更上层的 RPC 框架，程序中通常都会出现几类对象：
-
-- **endpoint**：通信双方的身份，例如 IP 地址、端口、设备或连接句柄
-- **connection**：一条已经建立或正在建立的通信关系
-- **buffer**：应用准备发送或接收数据的内存区域
-- **send/receive**：把本地 buffer 交给传输层，或让传输层把数据写入本地 buffer
-- **completion 或返回值**：告诉应用操作是否成功、失败或仍在进行
-
-这些对象构成了网络编程的基本骨架。不同传输机制的差异，主要体现在 endpoint 如何表示，连接如何建立，buffer 如何交给传输层，以及完成状态由谁产生、以什么方式返回给应用。
-
-下一节看看 TCP socket 如何实现这个模式。
-
-## 1.1.2 TCP socket 的实现
-
-TCP socket 是上述模式在操作系统中的典型实现。它用 IP 地址和端口描述 endpoint，用 socket 文件描述符表示通信对象。server 创建监听 socket 后，先用 `bind` 指定本地地址和端口，再用 `listen` 进入监听状态，最后通过 `accept` 接受 client 发起的连接。client 使用 `connect` 连接 server。连接建立后，两端都会得到一个已连接 socket，并通过 `send` 和 `recv` 在这条连接上传输数据。
+假设 client 要发送字符串 `hello`。server 先绑定地址、监听连接，client 再主动连接。连接建立以后，双方各有一个已连接的 socket：
 
 ```mermaid
 sequenceDiagram
-    participant Server
-    participant Client
-
-    Server->>Server: socket()
-    Server->>Server: bind()
-    Server->>Server: listen()
-    Client->>Client: socket()
-    Client->>Server: connect()
-    Server->>Client: accept()
-    Client->>Server: send()
-    Server->>Server: recv()
+    participant S as server
+    participant C as client
+    S->>S: socket、bind、listen
+    C->>S: connect
+    S->>S: accept
+    C->>S: send 字节流
+    S->>S: recv 到应用缓冲区
 ```
 
-图 1-1：TCP socket 的连接建立与数据接收过程。
+图 1-1：TCP 连接与字符串收发。
 {: .figure-caption }
 
-以下代码片段保留 server 端最核心的动作：绑定本地地址，进入监听状态，接受连接，然后从连接上读取数据。
+下面的 C 片段只展示连接后的收发动作，省略地址初始化、错误检查和处理部分收发的循环：
 
 ```c
-int listen_fd = socket(AF_INET, SOCK_STREAM, 0);
+/* client：fd 是已经连接的 socket。 */
+char message[] = "hello";
+send(fd, message, sizeof(message), 0);
 
-bind(listen_fd, (struct sockaddr *)&addr, sizeof(addr));
-listen(listen_fd, 128);
-
-int conn_fd = accept(listen_fd, NULL, NULL);
-
-char buf[4096];
-ssize_t n = recv(conn_fd, buf, sizeof(buf), 0);
+/* server：conn_fd 来自 accept。 */
+char buffer[4096];
+ssize_t received = recv(conn_fd, buffer, sizeof(buffer), 0);
 ```
 
-client 端则主动连接 server，并把用户态 buffer 中的数据写入连接。
+TCP 提供有序字节流。一次 `send` 不一定对应一次 `recv`，应用需要约定消息长度或分隔方式。`send` 返回也不表示对方业务已经处理完数据；它首先反映本次调用接受了多少字节。
 
-```c
-int fd = socket(AF_INET, SOCK_STREAM, 0);
+在常见的普通 socket 路径中，发送数据会从应用缓冲区进入内核管理的网络缓冲区，再由网卡发送。接收端经过相反的过程。TCP 的分包、确认、重传由协议栈承担，应用主要处理字节流。
 
-connect(fd, (struct sockaddr *)&server_addr, sizeof(server_addr));
+## 当应用已经知道目标内存
 
-char buf[] = "hello";
-send(fd, buf, sizeof(buf), 0);
-```
+假设 server 已经分配好一个 8 MiB 缓冲区，client 需要把一块缓存放进去。应用真正关心的是数据从哪个地址移动到哪个地址。通过 socket 完成这件事，还需要由接收程序读取消息，再把数据放入约定的位置。
 
-这两段代码刻意省略了错误处理和参数初始化，只保留 TCP socket 的基本结构。从代码可以看出，应用显式管理的是 socket 文件描述符、地址和用户态 buffer。
-
-至于用户态数据如何进入内核，TCP 如何分段和重传，乱序数据如何恢复，网卡何时通过 DMA 收发数据，远端内核何时唤醒应用——这些都由 socket 抽象隐藏起来，应用不必关心。
-
-这种抽象是 TCP socket 的价值所在。应用不必直接处理复杂的网络细节，就可以得到可靠、通用、易部署的字节流连接。正因为如此，TCP 仍然是最重要的通用传输机制，适合跨机房、跨地域和广域网环境，也常用于 RDMA 系统的控制面，例如连接建立、元数据交换和故障恢复。
-
-**但是**，当传输路径本身进入性能敏感的数据面时，socket 抽象隐藏的成本就需要重新评估了。下一节来看看这些成本究竟是什么。
-
-## 1.1.3 TCP 数据路径的开销与边界
-
-想象一个分布式训练系统：多台机器通过高速网络持续同步模型参数，通信发生在每一次梯度聚合的关键路径上。若网络传输延迟从微秒级恶化到百微秒级，同步等待时间会被反复放大，训练吞吐随之下降；若 CPU 需要花费大量时间处理网络协议，GPU 就会空转等待。这里的"快"和"慢"都是相对业务而定，重要的是理解延迟与 CPU 开销如何进入端到端性能。
-
-在大模型推理、分布式存储、远程内存等场景中，系统经常需要在节点之间搬运大块数据，或者以很高频率传输小消息。这类数据面需求通常不是"能够通信"这么简单，而是希望端到端持续达到 GB/s 级带宽，同时把延迟控制在微秒级。此时，数据移动不再只是业务逻辑之后的附属步骤，而会直接决定吞吐、延迟和资源利用率。
-
-在这样的性能目标下，上一节中被 socket 抽象隐藏起来的细节会重新变成系统设计必须考虑的问题。主要有以下三类开销。
-
-第一，系统调用和上下文切换会增加延迟。应用每次进入内核都要穿越用户态和内核态边界。在高频小消息场景中，这部分开销会被显著放大。
-
-第二，协议处理会消耗 CPU。TCP 需要维护连接状态，处理确认、重传、拥塞控制和顺序交付。高速网卡环境下，如果 CPU 需要参与每一次传输的大量协议处理，CPU 可能先于网络带宽成为瓶颈。
-
-第三，TCP 的字节流抽象与实际需求不匹配。很多系统真正需要的是把本地一段内存写入远端一段内存，或者从远端一段内存读取数据。远端地址、访问权限和完成语义都需要由应用协议重新定义。
-
-这正是 RDMA 要解决的问题。RDMA 不应被理解为 TCP 的通用替代品，而更适合被看作一种数据面技术：在硬件、网络和部署条件相对受控的环境中，以更低的 CPU 参与度、更短的数据路径和更明确的内存语义完成数据移动。实际系统也经常同时使用 TCP 和 RDMA：TCP 负责连接管理、控制消息或跨网络边界的通信，RDMA 负责性能敏感的数据传输。
-
-下一节看看 RDMA 究竟有什么关键特点。
-
-## 1.1.4 RDMA 的关键特点
-
-理解 RDMA，先要理解 DMA。
-
-DMA 就是让设备直接读写内存，不用 CPU 逐字节搬运。网卡收包、磁盘读写、GPU 数据传输都会用到 DMA。CPU 仍然负责配置设备、提交请求、处理完成和异常；真正的大块数据搬运则由设备完成。
-
-RDMA 就是远程 DMA：一台机器的 RDMA 网卡，在本端程序提交请求后，通过网络访问另一台机器已经注册并授权的内存区域。其中，"remote"说明目标内存位于远端机器，"direct"说明数据面尽量不走传统 TCP socket 的内核协议栈和远端应用处理路径。
-
-本节只介绍 RDMA 区别于 TCP socket 的几个关键特点。protection domain、memory region、queue pair、completion queue 等对象之间的完整关系，将在第二篇"编程模型"中展开。
-
-### 远端内存访问
-
-RDMA 与 TCP socket 的第一个核心区别在于内存访问方式。
-
-TCP socket 提供的是字节流。应用把数据写入 socket，远端应用再从 socket 读出数据。RDMA 提供的抽象更接近"内存访问"：一端可以把数据写入远端的一段内存，也可以从远端的一段内存读取数据。
-
-这并不意味着任意机器都能读写任意远端内存。远端内存必须先被注册，并授予相应权限；发起 RDMA READ、RDMA WRITE 或 Atomic 操作时，还需要使用远端提供的地址和 `rkey`。因此，RDMA 的"直接访问"建立在明确授权之上。
-
-### 更短的数据路径
-
-传统 TCP 程序的数据路径通常经过内核网络协议栈。应用调用 `send` 或 `recv` 后，内核负责 socket buffer 管理、TCP/IP 协议处理、拥塞控制、重传和唤醒通知。
-
-RDMA 的数据路径不同。资源建立完成后，应用可以通过用户态 Verbs 接口提交请求，由 RDMA 网卡直接执行组包、发送或接收。两条路径的差异可以直观地对比如下：
+RDMA WRITE 可以直接表达这次搬运。server 先登记缓冲区的地址范围和允许的访问方式，这个过程叫内存注册。随后把目标地址和远端访问凭证 `rkey` 交给 client。client 提交写入请求，两端网卡完成传输，server 不必为这块数据调用 `recv`。
 
 ```mermaid
-flowchart LR
-    subgraph TCP["TCP 数据路径"]
-        T1["应用"] -->|"send / recv<br/>（系统调用）"| T2["内核协议栈<br/>socket buffer<br/>TCP/IP 处理"]
-        T2 -->|"DMA"| T3["网卡"]
-        T2 -->|"数据拷贝<br/>唤醒通知"| T1
-    end
-    subgraph RDMA["RDMA 数据路径"]
-        R1["应用"] -->|"ibv_post_send<br/>（用户态）"| R2["QP / WQE<br/>doorbell"]
-        R2 -->|"DMA 直读应用内存"| R3["RDMA 网卡"]
-        R1 -->|"ibv_poll_cq"| R4["CQ / CQE"]
-    end
+sequenceDiagram
+    participant C as client
+    participant N as 两端 RDMA 网卡
+    participant S as server
+    S->>S: 分配并注册目标缓冲区
+    S->>C: 告知目标地址与访问凭证
+    C->>N: 提交 WRITE 请求
+    N->>S: 写入已授权内存
+    N-->>C: 返回完成记录
+    C->>S: 应用约定的完成通知
 ```
 
-图 1-2：TCP 与 RDMA 数据路径对比。TCP 的每次收发都要经过内核协议栈并涉及数据拷贝；RDMA 在资源建立后，投递请求、轮询完成与数据搬运都在用户态与网卡之间完成。
+图 1-2：先授权目标内存，再发起 RDMA WRITE。
 {: .figure-caption }
 
-!!! note "kernel bypass 不是完全绕过内核"
-    kernel bypass 指数据面绕过通用内核网络协议栈，而不是整个程序不经过内核。设备发现、资源创建、内存注册、权限设置和错误事件处理仍然需要内核和驱动参与。
+两端通常仍有一条 TCP 或 RPC 控制通道，用来交换连接信息、分配目标空间和通知业务。RDMA 接管其中的大块数据搬运。下一章的示例正是这种结构。
 
-RDMA 也常与 zero copy 一起讨论。zero copy 就是让网卡通过 DMA 直接访问应用指定的内存区域，避免数据在应用 buffer 和内核 buffer 之间反复复制。为此，应用必须把相关内存注册为 memory region，并在提交请求时使用对应的 `lkey`；如果允许远端访问，还需要把远端地址和 `rkey` 交给对端。
+## “直接访问”省去了什么
 
-### 异步队列
+DMA（Direct Memory Access，直接内存访问）允许设备读写内存，CPU 不必逐字节执行复制。普通网卡和磁盘也使用 DMA。RDMA 将这种访问能力延伸到网络另一端事先授权的内存。
 
-RDMA 不是同步的函数调用模型，而是异步队列模型。一个 queue pair，简称 QP，维护两个队列：send queue 和 receive queue。应用发起 SEND、RDMA WRITE、RDMA READ 或 Atomic 操作时，把请求投递到 send queue；应用准备接收 SEND 消息时，把接收 buffer 投递到 receive queue。
+硬件 RDMA 的常规数据路径可以省去应用缓冲区与内核 socket 缓冲区之间的复制，这通常被称为 zero copy。数据依然需要经过内存、网卡和网络。小消息还可能使用 inline，由 CPU 在投递时复制到设备工作项里；后文会解释这种取舍。
 
-```mermaid
-flowchart LR
-    A["应用程序"] -->|"ibv_post_send"| SQ
-    A -->|"ibv_post_recv"| RQ
+资源准备完成后，投递和完成轮询通常可以在用户态执行，这就是常说的 kernel bypass。打开设备、注册内存和创建队列仍需要内核协助。性能收益来自改变高频数据路径，具体幅度要在给定硬件和负载上测量。
 
-    SQ["Send Queue"]
-    RQ["Receive Queue"]
-    SQ --> NIC["RDMA NIC"]
-    RQ --> NIC
-    NIC --> CQ["Completion Queue"]
-    A -->|"ibv_poll_cq"| CQ
+网卡也不会因为拿到了一个地址就执行访问。它会检查访问凭证、范围和权限。注册得到的 Memory Region（MR，内存区域）保存这些信息，第二篇再详细解释它的用法。
+
+## 从函数返回到操作完成
+
+RDMA 是异步的。应用先描述一次工作，再把请求放进队列；网卡执行以后，通过另一条队列报告结果。
+
+```text
+填写请求 → 投递 → 网卡读取数据并传输 → 应用取得完成
 ```
 
-图 1-3：RDMA 异步队列中的请求提交与完成轮询。
-{: .figure-caption }
+因此，投递函数返回成功后，源数据仍可能尚未读完。如果应用立即把缓冲区改成下一条消息，网卡可能发送修改后的内容。最初的示例会等待成功完成，再允许复用缓冲区。
 
-Send Queue 和 Receive Queue 共同构成一个 queue pair。投递到队列中的请求称为 work request，简称 WR。WR 描述网卡要做什么：操作类型是什么，本地 buffer 在哪里，长度是多少，使用哪个 `lkey`；如果是 RDMA WRITE、RDMA READ 或 Atomic，还要提供远端地址和 `rkey`。应用提交 WR 之后，网卡异步读取队列并执行请求。
+client 得到 WRITE 完成，server 的业务线程却未必知道有数据到达。普通 WRITE 不自动产生远端接收完成。示例会在 WRITE 完成后发一条 TCP 通知，server 收到通知才打印内存。
 
-请求执行完成后，网卡不会直接调用应用函数，而是把 completion queue entry（简称 CQE）写入 completion queue（简称 CQ）。应用通过 polling 或事件通知从 CQ 中取出 work completion（简称 WC），并根据其中的状态判断操作是否成功。
+## 后面会用到的操作
 
-这个模型带来高性能，也带来新的语义边界。
+WRITE 适合由数据生产方主动推送；READ 则由需要数据的一方取回。SEND/RECV 按消息协作，接收方先准备接收空间。Atomic 可以原子地更新特定的远端值，放在第二篇的选读章节。
 
-`ibv_post_send` 或 `ibv_post_recv` 返回成功，只说明请求已经被接受投递，不等于传输已经完成。应用需要从 completion queue 取到 WC，才能根据操作类型判断本地 buffer 是否可以复用、远端内存是否已经被写入，或者 receive buffer 中是否已经有可读取的数据。
+| 操作 | 怎样指定数据位置 | 通信前的准备 |
+|---|---|---|
+| SEND / RECV | 接收方通过 RECV 指定 | 提前投递接收缓冲区 |
+| WRITE | 发起方使用约定的远端地址 | 注册目标、授权并安排消费 |
+| READ | 发起方指定本地结果地址 | 远端授权数据源并保持其有效 |
+| Atomic | 发起方使用约定的远端变量地址 | 提供符合能力、权限和对齐要求的变量 |
 
-更进一步说，RDMA completion 通常不表示远端应用已经处理了这条数据；如果需要应用级确认，仍然要由协议自己设计。
+表 1-1：RDMA 操作与通信前的准备。
+{: .table-caption }
 
-### RDMA 操作类型
+WRITE、READ、Atomic 常称为单边操作，意思是单次数据操作由发起方提交。内存授权、寿命和业务协调仍需要双方约定。带着这些区别，可以开始[检查环境并运行第一个程序](02-environment-and-first-program.md)。
 
-RDMA 提供了几种不同的操作类型。
+## 参考资料
 
-**SEND/RECV** 与 TCP socket 的 `send`/`recv` 最相似。一端发送数据，另一端接收数据，两端应用都参与。区别在于，RDMA 接收方必须提前投递 RECV，网卡才能把到达的数据放入接收方准备好的 buffer。
-
-**RDMA WRITE** 和 **RDMA READ** 是 one-sided 操作。发起方把本地数据直接写入（或从）远端已经授权的内存区域，远端 CPU 不参与数据搬运。
-
-**Atomic** 可以在远端授权内存上执行有限的 64 位原子操作，常用于同步和协调。
-
-下一章开始动手实践——先检查环境，然后运行第一个 RDMA 程序。
-
-## 延伸阅读
-
-- InfiniBand Trade Association，《InfiniBand Architecture Specification Volume 1》，其中定义了 QP 状态机、传输服务类型、PSN 与可靠传输语义。规范需要从 IBTA 网站获取，读者可在需要精确语义时查阅相应章节。
-- Linux 内核文档 `Documentation/infiniband/`（`<https://docs.kernel.org/infiniband/>`），说明 Linux RDMA 子系统的用户态与内核态接口。
-- [rdma-core](https://github.com/linux-rdma/rdma-core) 项目的 `libibverbs` 头文件与手册页，是 Verbs API 参数与语义的权威参考。
-- [Linux Kernel RDMA 常见问题](https://www.kernel.org/doc/html/latest/infiniband/)，适合快速检索连接建立、内存注册和错误处理等问题。
-
-本章的定性结论（数据路径、异步模型、one-sided 语义）都基于上述规范与实现；涉及具体数字的性能表述，应以读者自己环境中的测量为准。
+[Linux RDMA 用户态接口文档](https://docs.kernel.org/infiniband/user_verbs.html)说明设备访问与用户态资源的关系；[rdma-core](https://github.com/linux-rdma/rdma-core)提供本教程使用的 Verbs 库、工具和手册。
